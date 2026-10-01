@@ -1,0 +1,39 @@
+# Local development stack. `docker compose up -d db redis` then `npm run dev` + `npm run worker:dev`,
+# or bring everything up including the API and worker containers.
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: kmdoch
+      POSTGRES_PASSWORD: kmdoch
+      POSTGRES_DB: kmdoch
+    ports: ['5432:5432']
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U kmdoch']
+      interval: 5s
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+  migrate:
+    build: .
+    command: ['sh', '-c', 'node dist/db/migrate.js && node dist/db/seed.js --demo']
+    environment: &env
+      NODE_ENV: development
+      DATABASE_URL: postgres://kmdoch:kmdoch@db:5432/kmdoch
+      REDIS_URL: redis://redis:6379/0
+      OPS_ADMIN_PHONES: '+919000000001'
+    depends_on:
+      db: { condition: service_healthy }
+  api:
+    build: .
+    environment: *env
+    ports: ['3000:3000']
+    depends_on: [migrate, redis]
+  worker:
+    build: .
+    command: ['node', 'dist/worker.js']
+    environment: *env
+    depends_on: [migrate, redis]
+volumes:
+  pgdata:
