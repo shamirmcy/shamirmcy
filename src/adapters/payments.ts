@@ -30,7 +30,13 @@ export class FakePaymentGateway implements PaymentGateway {
     this.statuses.set(orderId, 'pending');
     return { gateway: this.name, orderId, clientPayload: { order_id: orderId, amount: amountPaise, receipt } };
   }
+  /** Number of upcoming refund calls that should fail (simulates gateway outages). */
+  failRefunds = 0;
   async refund() {
+    if (this.failRefunds > 0) {
+      this.failRefunds--;
+      throw new Error('Gateway refund unavailable');
+    }
     return { refundId: `rfnd_${randomUUID()}` };
   }
   verifyWebhook(rawBody: string, signature: string | undefined) {

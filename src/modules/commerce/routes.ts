@@ -6,6 +6,7 @@ import { many, maybeOne } from '../../lib/db.js';
 import { IdParams, typed, Uuid } from '../../lib/http.js';
 import { requireApp } from '../../plugins/auth.js';
 import { getFamilyLink } from '../access.js';
+import { invoicePdfUrl } from './receipt.js';
 import { ambulanceTracking, createAmbulanceRun, createPayment, createPharmacyOrder, createRental, escalation, handlePaymentWebhook } from './service.js';
 
 export default async function commerceRoutes(fastify: FastifyInstance, ctx: Ctx) {
@@ -116,7 +117,9 @@ export default async function commerceRoutes(fastify: FastifyInstance, ctx: Ctx)
     return inv;
   });
 
-  // Webhook: raw body needed for signature verification, so it gets its own JSON parser.
+  app.get('/invoices/:id/pdf', { schema: { tags: ['payments'], params: IdParams } }, async (req) => invoicePdfUrl(ctx, req.auth.userId, req.params.id));
+
+    // Webhook: raw body needed for signature verification, so it gets its own JSON parser.
   await fastify.register(async (scoped) => {
     scoped.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => done(null, body));
     scoped.post('/webhooks/payments', { config: { public: true }, schema: { tags: ['payments'], hide: true } }, async (req) =>

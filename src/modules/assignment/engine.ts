@@ -7,6 +7,7 @@ import { notify } from '../notifications/service.js';
 import { releaseAssignments, zoneForAddress } from '../requests/service.js';
 import { transition } from '../requests/state.js';
 import { estimateEta } from './eta.js';
+import { clashSql, providerHasClash } from './clash.js';
 import { issueVisitCode } from '../visits/service.js';
 
 /** Due now (or within 2 hours), as opposed to booked for later. */
@@ -100,6 +101,8 @@ export async function findCandidates(ctx: Ctx, sr: any, slot: any): Promise<Cand
                    AND s.last_location_at > now() - make_interval(secs => $6)))
        -- 'withdrawn' only means someone else took the slot; those providers can be offered it again.
        AND NOT EXISTS (SELECT 1 FROM request_assignments x WHERE x.request_id = $4 AND x.provider_id = p.id AND x.outcome <> 'withdrawn')
+       -- No double-booking: skip anyone with an accepted visit that overlaps this one.
+       AND NOT ${clashSql('p.id', '$4')}
      ORDER BY CASE WHEN $5 THEN 0 ELSE ST_Distance(s.last_location, (SELECT location FROM addresses WHERE id=$7)) END
      LIMIT $8`,
     [slot.role, zone.id, sr.patient_id, sr.id, slot.remote, ctx.config.duty.locationTtlSeconds, sr.address_id, cfg.maxCandidates],
@@ -198,6 +201,8 @@ export async function acceptOffer(ctx: Ctx, providerId: string, requestId: strin
       const session = await maybeOne(c, 'SELECT * FROM provider_sessions WHERE provider_id=$1 FOR UPDATE', [providerId]);
       if (!session?.on_duty) throw new AppError('NOT_ON_DUTY', 'Go on duty to accept requests');
       if (!slot.remote && session.active_job_id) throw new AppError('CONFLICT', 'Finish your current visit first');
+      // Re-checked at accept: another booking may have been accepted since the offer went out.
+      if (await providerHasClash(c, providerId, requestId)) throw new AppError('SCHEDULE_CLASH', 'This overlaps a visit you have already accepted');
 
       let roleInVisit = offer.role_in_visit as string;
       const remoteSupervision = slot.role === 'doctor' && sr.first_dose_mode === 'with_doctor' && opts.supervision_mode === 'remote';

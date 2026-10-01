@@ -9,6 +9,7 @@ import { runWeeklyPayouts } from '../modules/commerce/billing.js';
 import { ambulanceAckTimeout, reconcilePayments } from '../modules/commerce/service.js';
 import { deliver, notify } from '../modules/notifications/service.js';
 import { sweepMissedVisits } from '../modules/visits/service.js';
+import { retryFailedRefunds } from '../modules/commerce/settlement.js';
 
 async function followUpReminders(ctx: Ctx) {
   const rows = await many(
@@ -56,5 +57,6 @@ export const jobHandlers: Record<JobName, JobHandler> = {
   'rentals.reminders': (ctx) => rentalReminders(ctx),
   'ambulance.ack_timeout': (ctx, d) => ambulanceAckTimeout(ctx, d.runId),
   'visits.sweep': (ctx) => sweepMissedVisits(ctx),
+  'refunds.retry': (ctx) => retryFailedRefunds(ctx),
   notify: (ctx, d) => deliver(ctx, d),
 };
