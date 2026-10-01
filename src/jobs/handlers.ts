@@ -37,6 +37,7 @@ async function rentalReminders(ctx: Ctx) {
 /** Location pings: keep partitions ahead of time and drop anything older than 30 days. */
 async function pingRetention(ctx: Ctx) {
   await ctx.db.query('SELECT ensure_location_ping_partitions(3)');
+  await ctx.db.query('UPDATE otp_challenges SET code_enc=NULL WHERE code_enc IS NOT NULL AND (consumed_at IS NOT NULL OR expires_at < now())');
   const r = await ctx.db.query('SELECT drop_old_location_ping_partitions($1) AS n', [ctx.config.pingRetentionDays]);
   // Belt and braces for rows that landed in a partition spanning the cutoff.
   await ctx.db.query(`DELETE FROM location_pings WHERE recorded_at < now() - make_interval(days => $1)`, [ctx.config.pingRetentionDays]);

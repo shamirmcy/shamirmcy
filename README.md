@@ -6,6 +6,8 @@ Production backend for KM DocH, a home-healthcare mediator in India. It connects
 
 The design review the spec asks for (data model restated, plus what is unsafe, unclear or overbuilt) is in [`docs/DESIGN.md`](docs/DESIGN.md). Read it first.
 
+> **Not a developer?** See [`docs/HOW-TO-RUN.md`](docs/HOW-TO-RUN.md). Install Docker Desktop, double-click the start file, and try a full visit in your browser at http://localhost:3000/dev.
+
 ## Quick start
 
 ```bash
@@ -13,7 +15,7 @@ docker compose up -d db redis          # PostGIS 16 + Redis 7
 cp .env.example .env                   # dev defaults work as-is
 npm install
 npm run migrate && npm run seed -- --demo
-npm run dev                            # API on :3000, OTPs are printed to the console in development
+npm run dev                            # API on :3000; test console at /dev, API docs at /docs
 npm run worker:dev                     # BullMQ worker + schedules (or set INLINE_JOBS=true to run jobs in the API)
 ```
 

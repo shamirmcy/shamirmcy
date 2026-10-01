@@ -5,7 +5,8 @@ import { typed, Uuid } from '../../lib/http.js';
 import { PhoneSchema } from '../../lib/phone.js';
 import { many, maybeOne, one } from '../../lib/db.js';
 import { PROVIDER_ROLES } from '../providers/roles.js';
-import { logout, publicUser, refresh, requestOtp, verifyOtp } from './service.js';
+import { handleWhatsAppStatus, logout, publicUser, refresh, requestOtp, verifyOtp } from './service.js';
+import { AppError } from '../../lib/errors.js';
 
 export default async function authRoutes(fastify: FastifyInstance, ctx: Ctx) {
   const app = typed(fastify);
@@ -21,6 +22,7 @@ export default async function authRoutes(fastify: FastifyInstance, ctx: Ctx) {
           app_role: z.enum(['patient', 'provider', 'partner', 'ops']),
           provider_role: z.enum(PROVIDER_ROLES).optional(),
           reg_number: z.string().min(3).max(40).optional(),
+          channel: z.enum(['whatsapp', 'sms']).optional(),
         }),
       },
     },
@@ -83,4 +85,22 @@ export default async function authRoutes(fastify: FastifyInstance, ctx: Ctx) {
       return { user: publicUser(u, req.auth.roles) };
     },
   );
+
+  // Meta webhook: GET is the one-time subscription check, POST carries delivery statuses (raw body for the signature).
+  app.get(
+    '/webhooks/whatsapp',
+    { config: { public: true }, schema: { hide: true, querystring: z.object({ 'hub.mode': z.string(), 'hub.verify_token': z.string(), 'hub.challenge': z.string() }).partial() } },
+    async (req, reply) => {
+      const q = req.query;
+      const expected = ctx.config.env.WHATSAPP_VERIFY_TOKEN;
+      if (!expected || q['hub.mode'] !== 'subscribe' || q['hub.verify_token'] !== expected) throw new AppError('FORBIDDEN', 'Verification failed');
+      return reply.type('text/plain').send(q['hub.challenge'] ?? '');
+    },
+  );
+  await fastify.register(async (scoped) => {
+    scoped.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => done(null, body));
+    scoped.post('/webhooks/whatsapp', { config: { public: true }, schema: { hide: true } }, async (req) =>
+      handleWhatsAppStatus(ctx, req.body as string, req.headers['x-hub-signature-256'] as string | undefined),
+    );
+  });
 }

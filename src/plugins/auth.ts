@@ -59,6 +59,8 @@ export const authPlugin = fp(async (app: FastifyInstance, opts: { ctx: Ctx }) =>
   // onRequest: authenticate before the body is parsed or validated.
   app.addHook('onRequest', async (req) => {
     if (req.routeOptions.config?.public) return;
+    // Interactive API docs (dev only; registered only outside production).
+    if (req.url === '/docs' || req.url.startsWith('/docs/')) return;
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) throw new AppError('UNAUTHENTICATED', 'Missing bearer token');
     req.auth = await verifyAccessToken(ctx, h.slice(7));

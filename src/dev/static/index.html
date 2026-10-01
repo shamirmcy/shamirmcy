@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KM DocH test console</title>
+<link rel="stylesheet" href="/dev/app.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>KM DocH test console</h1>
+    <p class="muted">Try the backend from your browser: book as a patient on the left, handle it as a provider on the right. Development only.</p>
+  </div>
+  <nav><a href="/docs" target="_blank">API docs</a><a href="/healthz" target="_blank">Health</a></nav>
+</header>
+
+<main>
+  <section class="pane" id="patient">
+    <h2>Patient</h2>
+
+    <div class="card" data-step="signin">
+      <h3>1 · Sign in</h3>
+      <div class="row">
+        <label>Mobile<input id="p-phone" inputmode="numeric" maxlength="10"></label>
+        <label>Send code by<select id="p-channel"><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option></select></label>
+      </div>
+      <div class="row"><button id="p-send">Send code</button><label>Code<input id="p-code" inputmode="numeric" maxlength="6"></label><button id="p-verify" disabled>Sign in</button></div>
+      <p class="hint" id="p-sent"></p>
+      <p class="ok" id="p-me"></p>
+    </div>
+
+    <div class="card" data-step="address">
+      <h3>2 · Home address</h3>
+      <label>Search<input id="p-search" placeholder="Try: Indiranagar, HAL, Domlur, Kumbakonam" autocomplete="off" disabled></label>
+      <ul class="suggest" id="p-suggest"></ul>
+      <div class="row"><button id="p-here" class="secondary" disabled>Use a sample pin (Indiranagar)</button></div>
+      <p id="p-address"></p>
+    </div>
+
+    <div class="card" data-step="book">
+      <h3>3 · Book a service</h3>
+      <label>Service<select id="p-service" disabled></select></label>
+      <div id="p-options"></div>
+      <div class="row"><button id="p-quote" disabled>See price</button></div>
+      <div id="p-price"></div>
+      <div id="p-consents"></div>
+      <div class="row"><button id="p-book" disabled>Agree and book</button></div>
+    </div>
+
+    <div class="card" data-step="track">
+      <h3>4 · Your booking</h3>
+      <div id="p-track" class="muted">No booking yet.</div>
+      <div class="row" id="p-actions"></div>
+    </div>
+  </section>
+
+  <section class="pane" id="provider">
+    <h2>Provider</h2>
+
+    <div class="card">
+      <h3>1 · Sign in</h3>
+      <div class="row">
+        <label>Role<select id="v-role">
+          <option value="doctor">Doctor</option><option value="staff_nurse">Staff nurse</option><option value="caregiver">Caregiver</option>
+          <option value="lab_technician">Lab technician</option><option value="critical_care_technician">Critical care technician</option><option value="consultant">Consultant</option>
+        </select></label>
+        <label>Registration no.<input id="v-reg"></label>
+      </div>
+      <div class="row">
+        <label>Mobile<input id="v-phone" inputmode="numeric" maxlength="10"></label>
+        <button id="v-send">Send code</button>
+        <label>Code<input id="v-code" inputmode="numeric" maxlength="6"></label>
+        <button id="v-verify" disabled>Sign in</button>
+      </div>
+      <p class="hint" id="v-sent"></p>
+      <p class="ok" id="v-me"></p>
+    </div>
+
+    <div class="card">
+      <h3>2 · Get ready</h3>
+      <p class="muted">New providers wait for KM DocH to verify them. Here you can approve yourself.</p>
+      <div class="row wrap">
+        <button id="v-approve" disabled>Approve me (test only)</button>
+        <button id="v-terms" disabled>Accept practice terms</button>
+        <button id="v-loc" disabled>Allow location</button>
+        <button id="v-duty" disabled>Go on duty</button>
+      </div>
+      <p id="v-status" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h3>3 · Requests</h3>
+      <div id="v-offers" class="muted">Go on duty to receive requests.</div>
+    </div>
+
+    <div class="card">
+      <h3>4 · Visit</h3>
+      <div id="v-visit" class="muted">Accept a request to start a visit.</div>
+    </div>
+  </section>
+</main>
+
+<section id="log">
+  <h3>What the app sent to the server</h3>
+  <ol id="log-list"></ol>
+</section>
+
+<script src="/dev/app.js"></script>
+</body>
+</html>

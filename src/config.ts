@@ -24,12 +24,24 @@ const EnvSchema = z.object({
   PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
   FCM_PROJECT_ID: z.string().optional(),
   FCM_ACCESS_TOKEN: z.string().optional(),
+  WHATSAPP_PROVIDER: z.enum(['console', 'meta', 'off']).default('console'),
+  WHATSAPP_TOKEN: z.string().optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  WHATSAPP_OTP_TEMPLATE: z.string().default('kmdoch_otp'),
+  WHATSAPP_APP_SECRET: z.string().optional(),
+  WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+  DEV_TOOLS: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
   MSG91_AUTH_KEY: z.string().optional(),
   MSG91_OTP_TEMPLATE_ID: z.string().optional(),
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   PAYMENT_GATEWAY: z.enum(['fake', 'razorpay']).default('fake'),
-  DISTANCE_PROVIDER: z.enum(['straight_line', 'google']).default('straight_line'),
+  // offline = straight-line ETA + sample address search; google = Routes API + Places/Geocoding.
+  MAPS_PROVIDER: z.enum(['offline', 'google']).default('offline'),
+  MAPS_TRAVEL_MODE: z.enum(['DRIVE', 'TWO_WHEELER']).default('DRIVE'),
   GOOGLE_MAPS_API_KEY: z.string().optional(),
   STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   STORAGE_LOCAL_DIR: z.string().default('.local-storage'),
@@ -118,6 +130,7 @@ function assertProductionSafe(env: Env) {
     if (devDefaults.some((d) => env[k].includes(d))) throw new Error(`${k} must be set in production`);
   }
   if (env.SMS_PROVIDER === 'console') throw new Error('SMS_PROVIDER=console is not allowed in production');
+  if (env.WHATSAPP_PROVIDER === 'console') throw new Error('WHATSAPP_PROVIDER=console is not allowed in production (use meta or off)');
   if (env.PAYMENT_GATEWAY === 'fake') throw new Error('PAYMENT_GATEWAY=fake is not allowed in production');
   if (env.STORAGE_DRIVER === 'local') throw new Error('STORAGE_DRIVER=local is not allowed in production');
   if (env.INLINE_JOBS) throw new Error('INLINE_JOBS is not allowed in production');

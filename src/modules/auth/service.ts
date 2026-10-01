@@ -4,6 +4,7 @@ import { hmac, numericCode, randomToken, safeEqualHex } from '../../lib/crypto.j
 import { maybeOne, one, tx, type Queryable, many } from '../../lib/db.js';
 import { addSeconds } from '../../lib/time.js';
 import { signAccessToken, type AppRole, type AuthInfo } from '../../plugins/auth.js';
+import type { OtpLang } from '../../adapters/whatsapp.js';
 import { REG_TYPE_BY_ROLE, type ProviderRole } from '../providers/roles.js';
 
 const otpHash = (ctx: Ctx, challengeId: string, code: string) => hmac(ctx.config.env.OTP_PEPPER, `${challengeId}:${code}`);
@@ -14,6 +15,8 @@ export interface OtpRequestInput {
   app_role: AppRole;
   provider_role?: ProviderRole;
   reg_number?: string;
+  /** Preferred channel. WhatsApp falls back to SMS automatically if it fails. */
+  channel?: 'whatsapp' | 'sms';
 }
 
 export async function requestOtp(ctx: Ctx, input: OtpRequestInput, ip: string) {
@@ -42,9 +45,67 @@ export async function requestOtp(ctx: Ctx, input: OtpRequestInput, ip: string) {
     `INSERT INTO otp_challenges (phone_e164, code_hash, purpose, meta, expires_at) VALUES ($1,'pending',$2,$3,$4) RETURNING id`,
     [input.phone, input.app_role, meta, expiresAt],
   );
-  await ctx.db.query('UPDATE otp_challenges SET code_hash=$2 WHERE id=$1', [ch.id, otpHash(ctx, ch.id, code)]);
-  await ctx.adapters.sms.sendOtp(input.phone, code);
-  return { challenge_id: ch.id as string, expires_at: expiresAt.toISOString(), length: auth.otpLength };
+
+  const wantWhatsApp = (input.channel ?? 'whatsapp') === 'whatsapp' && ctx.adapters.whatsapp.enabled;
+  let channel: 'whatsapp' | 'sms' = 'sms';
+  let messageId: string | null = null;
+  let fallback = false;
+  if (wantWhatsApp) {
+    try {
+      const user = await maybeOne(ctx.db, 'SELECT preferred_language FROM users WHERE phone_e164=$1', [input.phone]);
+      messageId = (await ctx.adapters.whatsapp.sendOtp(input.phone, code, (user?.preferred_language ?? 'en') as OtpLang)).messageId;
+      channel = 'whatsapp';
+    } catch (e) {
+      ctx.log.warn({ err: (e as Error).message }, 'WhatsApp OTP failed; falling back to SMS');
+      fallback = true;
+    }
+  }
+  if (channel === 'sms') {
+    try {
+      await ctx.adapters.sms.sendOtp(input.phone, code);
+    } catch (e) {
+      await ctx.db.query('DELETE FROM otp_challenges WHERE id=$1', [ch.id]); // not counted against the send limit
+      ctx.log.error({ err: (e as Error).message }, 'SMS OTP failed');
+      throw new AppError('INTERNAL', 'We could not send your code. Please try again.');
+    }
+  }
+  await ctx.db.query('UPDATE otp_challenges SET code_hash=$2, channel=$3, provider_message_id=$4, code_enc=$5 WHERE id=$1', [
+    ch.id,
+    otpHash(ctx, ch.id, code),
+    channel,
+    messageId,
+    // Kept (encrypted) only for WhatsApp, so a later delivery failure can resend the same code by SMS.
+    channel === 'whatsapp' ? ctx.cipher.encrypt(code) : null,
+  ]);
+  return { challenge_id: ch.id as string, expires_at: expiresAt.toISOString(), length: auth.otpLength, channel, fallback };
+}
+
+/**
+ * WhatsApp delivery-status webhook (Meta). When an OTP message fails to deliver — typically because
+ * the number is not on WhatsApp — the same code is sent by SMS, once, while it is still valid.
+ */
+export async function handleWhatsAppStatus(ctx: Ctx, raw: string, signature: string | undefined) {
+  if (!ctx.adapters.whatsapp.verifyWebhook(raw, signature)) throw new AppError('UNAUTHENTICATED', 'Bad signature');
+  const body = JSON.parse(raw) as { entry?: Array<{ changes?: Array<{ value?: { statuses?: Array<{ id: string; status: string }> } }> }> };
+  let resent = 0;
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      for (const st of change.value?.statuses ?? []) {
+        if (st.status !== 'failed') continue;
+        const ch = await maybeOne(
+          ctx.db,
+          `UPDATE otp_challenges SET fallback_sent_at=now()
+           WHERE provider_message_id=$1 AND channel='whatsapp' AND fallback_sent_at IS NULL AND consumed_at IS NULL AND expires_at > now() AND code_enc IS NOT NULL
+           RETURNING id, phone_e164, code_enc`,
+          [st.id],
+        );
+        if (!ch) continue;
+        await ctx.adapters.sms.sendOtp(ch.phone_e164, ctx.cipher.decrypt(ch.code_enc));
+        resent++;
+      }
+    }
+  }
+  return { ok: true, resent };
 }
 
 export const normalizeReg = (r: string) => r.trim().toUpperCase().replace(/\s+/g, '');
@@ -74,7 +135,7 @@ export async function verifyOtp(ctx: Ctx, input: VerifyInput) {
 
   const app = ch.purpose as AppRole;
   return tx(ctx.db, async (c) => {
-    const consumed = await c.query('UPDATE otp_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL', [ch.id]);
+    const consumed = await c.query('UPDATE otp_challenges SET consumed_at=now(), code_enc=NULL WHERE id=$1 AND consumed_at IS NULL', [ch.id]);
     if (consumed.rowCount === 0) throw new AppError('OTP_EXPIRED', 'Code already used');
 
     const user = await one(

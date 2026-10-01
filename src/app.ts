@@ -22,6 +22,9 @@ import commerceRoutes from './modules/commerce/routes.js';
 import partnerRoutes from './modules/partners/routes.js';
 import opsRoutes from './modules/ops/routes.js';
 import contentRoutes from './modules/content/routes.js';
+import placesRoutes from './modules/places/routes.js';
+import swaggerUi from '@fastify/swagger-ui';
+import { devTools } from './dev/routes.js';
 
 export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   const app = Fastify({
@@ -77,17 +80,24 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
     await ctx.redis.ping();
     return { ok: true };
   });
+  app.get('/favicon.ico', { config: { public: true }, schema: { hide: true } }, async (_req, reply) => reply.code(204).send());
   app.get('/v1/openapi.json', { config: { public: true }, schema: { hide: true } }, async () => app.swagger());
 
   await app.register(
     async (v1) => {
-      for (const mod of [authRoutes, catalogueRoutes, consentRoutes, requestRoutes, familyRoutes, uploadRoutes, providerRoutes, clinicalRoutes, recordRoutes, commerceRoutes, partnerRoutes, opsRoutes, contentRoutes]) {
+      for (const mod of [authRoutes, catalogueRoutes, consentRoutes, requestRoutes, familyRoutes, uploadRoutes, providerRoutes, clinicalRoutes, recordRoutes, commerceRoutes, partnerRoutes, opsRoutes, contentRoutes, placesRoutes]) {
         await v1.register(async (scoped) => mod(scoped, ctx));
       }
     },
     { prefix: '/v1' },
   );
   await realtimeGateway(app, ctx);
+
+  // Test console (/dev) and interactive API docs (/docs): never in production.
+  if (ctx.config.env.NODE_ENV !== 'production' && ctx.config.env.DEV_TOOLS) {
+    await app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list', persistAuthorization: true } });
+    await app.register(async (scoped) => devTools(scoped, ctx));
+  }
 
   if (ctx.config.env.STORAGE_DRIVER === 'local' && ctx.config.env.NODE_ENV !== 'production') {
     // Dev-only stand-in for presigned S3 PUT/GET.

@@ -22,20 +22,32 @@ export class StraightLineDistanceAdapter implements DistanceAdapter {
   }
 }
 
-export class GoogleDistanceAdapter implements DistanceAdapter {
-  constructor(private readonly apiKey: string) {}
+/**
+ * Google Routes API (computeRouteMatrix), traffic-aware. Server-side only; the key never reaches clients.
+ * TWO_WHEELER is available in India and suits professionals on scooters.
+ */
+export class GoogleRoutesAdapter implements DistanceAdapter {
+  constructor(
+    private readonly apiKey: string,
+    private readonly travelMode: 'DRIVE' | 'TWO_WHEELER' = 'DRIVE',
+  ) {}
   async estimate(from: LatLng, to: LatLng): Promise<RouteEstimate> {
-    const u = new URL('https://maps.googleapis.com/maps/api/distancematrix/json');
-    u.searchParams.set('origins', `${from.lat},${from.lng}`);
-    u.searchParams.set('destinations', `${to.lat},${to.lng}`);
-    u.searchParams.set('departure_time', 'now');
-    u.searchParams.set('key', this.apiKey);
-    const res = await fetch(u, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) throw new Error(`Distance API ${res.status}`);
-    const body = (await res.json()) as any;
-    const el = body?.rows?.[0]?.elements?.[0];
-    if (el?.status !== 'OK') throw new Error(`Distance API element ${el?.status}`);
-    const secs = el.duration_in_traffic?.value ?? el.duration.value;
-    return { meters: el.distance.value, minutes: Math.max(1, Math.ceil(secs / 60)), source: 'api' };
+    const point = (p: LatLng) => ({ waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lng } } } });
+    const res = await fetch('https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-goog-api-key': this.apiKey,
+        'x-goog-fieldmask': 'originIndex,destinationIndex,duration,distanceMeters,condition',
+      },
+      body: JSON.stringify({ origins: [point(from)], destinations: [point(to)], travelMode: this.travelMode, routingPreference: 'TRAFFIC_AWARE' }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) throw new Error(`Routes API ${res.status}`);
+    const rows = (await res.json()) as Array<{ condition?: string; duration?: string; distanceMeters?: number }>;
+    const el = rows[0];
+    if (!el || el.condition !== 'ROUTE_EXISTS' || !el.duration) throw new Error(`Routes API: no route (${el?.condition})`);
+    const secs = Number(el.duration.replace(/s$/, ''));
+    return { meters: el.distanceMeters ?? 0, minutes: Math.max(1, Math.ceil(secs / 60)), source: 'api' };
   }
 }
