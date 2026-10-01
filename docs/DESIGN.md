@@ -4,7 +4,7 @@ Spec §14 asks to restate the data model and flag anything unsafe, unclear or ov
 
 ## 1. Data model (as built)
 
-Schema: `src/db/migrations/` (`001_init.sql`, `002_series_ratings_adjustments.sql`). UUIDv7 keys (`uuid_generate_v7()` in SQL), `created_at`/`updated_at` everywhere, `deleted_at` on user-owned rows, money in integer paise, times in `timestamptz` (UTC).
+Schema: `src/db/migrations/` (`001_init.sql`, `002_series_ratings_adjustments.sql`, `003_clashes_reschedule_receipts_refund_retry.sql`). UUIDv7 keys (`uuid_generate_v7()` in SQL), `created_at`/`updated_at` everywhere, `deleted_at` on user-owned rows, money in integer paise, times in `timestamptz` (UTC).
 
 | Area | Tables | Notes |
 |---|---|---|
@@ -82,6 +82,14 @@ One deviation from the spec diagram: `confirmed → assigning` and `no_provider 
 
 Partner-desk phone (`PARTNER_DESK_PHONE`), ambulance per-km rates (seeded placeholders flagged `meta.placeholder`), platform fee per service (all `payout_rule`s are editable), launch city/pincodes (demo zones: Indiranagar, Bengaluru and Kumbakonam Town), payment gateway (Razorpay adapter included), SMS/WhatsApp provider (MSG91 adapter included; WhatsApp and voice need the chosen vendor), FCM credentials, video vendor (stub adapter), OCR vendor (stub), payout rail for bank transfers (payouts are recorded as `sent` but no money moves yet).
 
-## 5. Not built yet
+## 5. Recently added
 
-Number masking, WhatsApp/voice delivery, real OCR/video vendors, bank payout rail, invoice PDFs (invoice rows exist), an admin UI (ops is API-only), per-route rate limits beyond OTP, rescheduling an individual series visit (patients can skip one; re-booking covers the rest), clash detection between two future bookings, retrying failed settlement refunds automatically (they are recorded as `failed` for ops).
+- **No double-booking**: each visit blocks a time window (`visit_occurrences.duration_minutes`: 90 min default, elder-care day 7 h / night 10 h, specialist 60 min). Providers with an overlapping accepted visit are never offered a request, and accepting is re-checked (`SCHEDULE_CLASH`).
+- **Rescheduling**: `POST /service-requests/:id/visits/:seq/reschedule` (≥2 h ahead, ≤60 days, no overlap with the booking's other visits or the professional's other bookings, which are never revealed). The professional is notified.
+- **PDF receipts**: `GET /invoices/:id/pdf`, generated once and stored privately. Tracking returns `invoice_id`. Tax details (GSTIN, SAC) are an **open item**.
+- **Refund retries**: failed gateway refunds retry every 5, 10, 20, 40, 80 minutes (`refunds.retry` job). After 6 attempts they stop and alert ops. Refunds still being retried count against the payment, so the same money can't be refunded twice.
+- **Rate limits**: 300 requests/minute per signed-in user, 60/minute per IP for public endpoints (`429` with `Retry-After`). Webhooks and health checks are exempt.
+
+## 6. Not built yet
+
+Number masking, WhatsApp/voice delivery, real OCR/video vendors, bank payout rail, an admin UI (ops is API-only), tax lines on receipts.

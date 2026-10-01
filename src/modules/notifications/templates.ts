@@ -15,7 +15,8 @@ export type NotificationEvent =
   | 'emergency_dispatched'
   | 'rental_ending'
   | 'provider_cancelled'
-  | 'refund_issued';
+  | 'refund_issued'
+  | 'visit_rescheduled';
 
 type Tpl = { title: string; body: string };
 
@@ -119,6 +120,12 @@ export const TEMPLATES: Record<NotificationEvent, Record<Lang, Tpl>> = {
     ta: { title: 'பணம் திருப்பி அளிக்கப்பட்டது', body: '{amount} உங்களுக்குத் திருப்பி அளிக்கப்படுகிறது.' },
     kn: { title: 'ಮರುಪಾವತಿ', body: '{amount} ನಿಮಗೆ ಮರುಪಾವತಿಯಾಗುತ್ತಿದೆ.' },
     hi: { title: 'रिफ़ंड जारी', body: '{amount} आपको वापस किया जा रहा है।' },
+  },
+  visit_rescheduled: {
+    en: { title: 'Visit rescheduled', body: 'A visit you accepted has moved to {when}.' },
+    ta: { title: 'வருகை நேரம் மாற்றம்', body: 'நீங்கள் ஏற்ற வருகை {when} க்கு மாற்றப்பட்டுள்ளது.' },
+    kn: { title: 'ಭೇಟಿ ಮರುನಿಗದಿ', body: 'ನೀವು ಒಪ್ಪಿದ ಭೇಟಿಯನ್ನು {when} ಕ್ಕೆ ಬದಲಾಯಿಸಲಾಗಿದೆ.' },
+    hi: { title: 'विज़िट का समय बदला', body: 'आपकी स्वीकार की गई विज़िट अब {when} पर है।' },
   },
 };
 

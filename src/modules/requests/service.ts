@@ -3,12 +3,14 @@ import type { Ctx } from '../../context.js';
 import { AppError } from '../../lib/errors.js';
 import { many, maybeOne, one, tx, type Queryable, type TxClient } from '../../lib/db.js';
 import { clientMeta } from '../../lib/http.js';
-import { getDef, scheduleFor } from '../catalogue/defs.js';
+import { getDef, scheduleFor, visitMinutesFor } from '../catalogue/defs.js';
 import { settleRequest } from '../commerce/settlement.js';
 import { consumeQuote, publicLine } from '../catalogue/service.js';
 import { recordRequestConsents, type ConsentInput } from '../consents/service.js';
 import { assertCanBook, getFamilyLink } from '../access.js';
 import { notify } from '../notifications/service.js';
+import { providerHasClash } from '../assignment/clash.js';
+import { formatIST } from '../../lib/time.js';
 import { STATUS_LABEL, TERMINAL, transition, type RequestStatus } from './state.js';
 import { approvedBio, providerCredentials } from '../providers/profile.js';
 
@@ -89,7 +91,12 @@ export async function createServiceRequest(ctx: Ctx, req: FastifyRequest, input:
       await c.query('INSERT INTO request_slots (request_id, role, role_in_visit, remote) VALUES ($1,$2,$3,$4)', [sr.id, s.role, s.role_in_visit, s.remote]);
     }
     for (const [i, at] of occurrences.entries()) {
-      await c.query('INSERT INTO visit_occurrences (request_id, seq, scheduled_for) VALUES ($1,$2,$3)', [sr.id, i + 1, at]);
+      await c.query('INSERT INTO visit_occurrences (request_id, seq, scheduled_for, duration_minutes) VALUES ($1,$2,$3,$4)', [
+        sr.id,
+        i + 1,
+        at,
+        visitMinutesFor(def, quote.options),
+      ]);
     }
     for (const a of input.attachments ?? []) await attachUpload(c, sr.id, userId, a.kind, a.blob_key);
 
@@ -165,6 +172,7 @@ export async function getTracking(ctx: Ctx, userId: string, requestId: string) {
   );
   const visits = await many(ctx.db, 'SELECT seq, scheduled_for, status FROM visit_occurrences WHERE request_id=$1 ORDER BY seq', [sr.id]);
   const rated = await maybeOne(ctx.db, 'SELECT 1 FROM ratings WHERE request_id=$1 LIMIT 1', [sr.id]);
+  const invoice = await maybeOne(ctx.db, `SELECT id FROM invoices WHERE target_type='service_request' AND target_id=$1`, [sr.id]);
   const status = sr.status as RequestStatus;
   const showCode = ['confirmed', 'provider_arrived'].includes(status);
   const code = showCode ? await maybeOne(ctx.db, 'SELECT code_enc FROM visit_codes WHERE request_id=$1', [sr.id]) : null;
@@ -186,6 +194,7 @@ export async function getTracking(ctx: Ctx, userId: string, requestId: string) {
     line_items: (sr.line_items as any[]).map(publicLine),
     visits: visits.map((v) => ({ seq: v.seq as number, scheduled_for: v.scheduled_for ? (v.scheduled_for as Date).toISOString() : null, status: v.status as string })),
     can_rate: providers.length > 0 && visits.some((v) => v.status === 'completed') && !rated,
+    invoice_id: (invoice?.id as string | undefined) ?? null,
     cancellable: !TERMINAL.has(status) && !['provider_arrived', 'in_progress'].includes(status),
     created_at: (sr.created_at as Date).toISOString(),
   };
@@ -238,6 +247,61 @@ export async function cancelOccurrence(ctx: Ctx, userId: string, requestId: stri
     }
     return { id: sr.id, seq, status: 'cancelled' };
   });
+}
+
+/**
+ * Move one upcoming visit (a single booking, or one visit of a series) to a new time.
+ * At least 2 hours ahead, within 60 days, not overlapping the request's other visits, and only
+ * when the assigned professional is free then (otherwise SCHEDULE_CLASH: pick another time).
+ */
+export async function rescheduleOccurrence(ctx: Ctx, userId: string, requestId: string, seq: number, when: string) {
+  const at = new Date(when);
+  const now = Date.now();
+  if (at.getTime() < now + 2 * 3600_000) throw new AppError('VALIDATION_ERROR', 'Choose a time at least 2 hours from now');
+  if (at.getTime() > now + 60 * 86_400_000) throw new AppError('VALIDATION_ERROR', 'Choose a time within the next 60 days');
+  const out = await tx(ctx.db, async (c) => {
+    const sr = await loadRequestForPatientUser(c, userId, requestId);
+    await c.query('SELECT id FROM service_requests WHERE id=$1 FOR UPDATE', [sr.id]);
+    if (TERMINAL.has(sr.status) || sr.status === 'draft') throw new AppError('INVALID_TRANSITION', 'This request is closed');
+    const occ = await maybeOne(c, 'SELECT * FROM visit_occurrences WHERE request_id=$1 AND seq=$2 FOR UPDATE', [sr.id, seq]);
+    if (!occ || occ.status !== 'scheduled') throw new AppError('NOT_FOUND', 'No upcoming visit with that number');
+    const nextOpen = await one(c, `SELECT min(seq)::int AS seq FROM visit_occurrences WHERE request_id=$1 AND status IN ('scheduled','in_progress')`, [sr.id]);
+    if (nextOpen.seq === seq && ['provider_arrived', 'in_progress'].includes(sr.status)) throw new AppError('INVALID_TRANSITION', 'This visit has already started');
+    const travelling = await maybeOne(c, 'SELECT provider_id FROM provider_sessions WHERE active_job_id=$1', [sr.id]);
+    if (travelling && nextOpen.seq === seq) throw new AppError('INVALID_TRANSITION', 'Your professional is already on the way. Cancel instead if you need to.');
+
+    await c.query('UPDATE visit_occurrences SET scheduled_for=$3, rescheduled_from=COALESCE(rescheduled_from, scheduled_for) WHERE request_id=$1 AND seq=$2', [sr.id, seq, at]);
+    const selfOverlap = await maybeOne(
+      c,
+      `SELECT 1 FROM visit_occurrences a JOIN visit_occurrences b ON a.request_id=b.request_id AND a.seq<>b.seq
+       WHERE a.request_id=$1 AND a.seq=$2 AND b.status IN ('scheduled','in_progress')
+         AND occurrence_window(a.scheduled_for, a.created_at, a.duration_minutes) && occurrence_window(b.scheduled_for, b.created_at, b.duration_minutes)`,
+      [sr.id, seq],
+    );
+    if (selfOverlap) throw new AppError('SCHEDULE_CLASH', 'That time overlaps another visit in this booking');
+    const team = await many(c, `SELECT ra.provider_id, p.user_id FROM request_assignments ra JOIN providers p ON p.id=ra.provider_id WHERE ra.request_id=$1 AND ra.outcome='accepted'`, [sr.id]);
+    for (const t of team) {
+      // Never reveal the professional's other bookings: just ask for another time.
+      if (await providerHasClash(c, t.provider_id, sr.id)) throw new AppError('SCHEDULE_CLASH', 'Your care professional is not free then. Please pick another time.');
+    }
+    await c.query(
+      `UPDATE service_requests SET scheduled_for=(SELECT min(scheduled_for) FROM visit_occurrences WHERE request_id=$1 AND status IN ('scheduled','in_progress')), eta_minutes=NULL, expected_by=NULL WHERE id=$1`,
+      [sr.id],
+    );
+    await c.query(`UPDATE video_sessions SET starts_at=$2, ends_at=$2::timestamptz + interval '60 minutes' WHERE request_id=$1 AND provider_joined_at IS NULL`, [sr.id, at]);
+    await c.query(`INSERT INTO request_events (request_id, from_status, to_status, actor_type, actor_id, meta) VALUES ($1,$2,$2,'patient',$3,$4)`, [
+      sr.id,
+      sr.status,
+      userId,
+      { rescheduled_visit: seq, from: occ.scheduled_for, to: at.toISOString() },
+    ]);
+    return { team };
+  });
+  for (const t of out.team) {
+    await ctx.realtime.publish(ctx.realtime.providerChannel(t.provider_id), 'visit.rescheduled', { request_id: requestId, seq, scheduled_for: at.toISOString() });
+    await notify(ctx, t.user_id, 'visit_rescheduled', { when: formatIST(at) });
+  }
+  return { id: requestId, seq, scheduled_for: at.toISOString() };
 }
 
 /** Withdraw open offers / cancel accepted assignments and free providers. */

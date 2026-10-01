@@ -15,6 +15,7 @@ export type JobName =
   | 'rentals.reminders'
   | 'ambulance.ack_timeout'
   | 'visits.sweep'
+  | 'refunds.retry'
   | 'notify';
 
 export type JobHandler = (ctx: Ctx, data: any) => Promise<unknown>;
@@ -103,6 +104,7 @@ export async function registerSchedules(queue: Queue) {
   await every('eta.refresh', 60_000);
   await every('duty.reaper', 60_000);
   await every('visits.sweep', 3_600_000);
+  await every('refunds.retry', 15 * 60_000);
   await cron('followup.reminders', '0 9 * * *');
   await cron('payouts.weekly', '0 2 * * 1');
   await cron('payments.reconcile', '30 1 * * *');

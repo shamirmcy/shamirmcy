@@ -7,7 +7,7 @@ import { consumeQuote, loadService } from '../catalogue/service.js';
 import { assertDispatchable } from '../clinical/service.js';
 import { notify } from '../notifications/service.js';
 import { assertAccountActive, zoneForAddress } from '../requests/service.js';
-import { amountDue } from './settlement.js';
+import { amountDue, REFUND_RESERVED, retryDelayMinutes } from './settlement.js';
 
 // ───────────────────────────── Pharmacy ─────────────────────────────
 
@@ -324,25 +324,26 @@ export async function refundPayment(ctx: Ctx, opsUserId: string, paymentId: stri
     const p = await maybeOne(c, 'SELECT * FROM payments WHERE id=$1 FOR UPDATE', [paymentId]);
     if (!p) throw new AppError('NOT_FOUND', 'Payment not found');
     if (!['captured', 'partially_refunded'].includes(p.status)) throw new AppError('CONFLICT', 'Only captured payments can be refunded');
-    const done = await one(c, `SELECT COALESCE(sum(amount_paise),0)::int AS n FROM refunds WHERE payment_id=$1 AND status <> 'failed'`, [paymentId]);
+    // Refunds still being retried count too, so ops cannot refund the same money twice.
+    const done = await one(c, `SELECT COALESCE(sum(amount_paise),0)::int AS n FROM refunds r WHERE payment_id=$1 AND ${REFUND_RESERVED}`, [paymentId]);
     if (done.n + amount > p.amount_paise) throw new AppError('VALIDATION_ERROR', 'Refund exceeds amount paid');
     let refundId: string | null = null;
     let status = 'processed';
+    let error: string | null = null;
     if (p.method !== 'cash') {
       try {
         refundId = (await ctx.adapters.payments.refund(p.gateway_payment_id ?? p.gateway_order_id, amount)).refundId;
-      } catch {
-        status = 'failed';
+      } catch (e) {
+        status = 'failed'; // retried automatically by the refunds.retry job
+        error = (e as Error).message.slice(0, 300);
       }
     }
-    const r = await one(c, `INSERT INTO refunds (payment_id, amount_paise, reason, status, gateway_refund_id, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [
-      paymentId,
-      amount,
-      reason,
-      status,
-      refundId,
-      opsUserId,
-    ]);
+    const r = await one(
+      c,
+      `INSERT INTO refunds (payment_id, amount_paise, reason, status, gateway_refund_id, created_by, last_error, next_retry_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, CASE WHEN $4='failed' THEN now() + make_interval(mins => $8) END) RETURNING id`,
+      [paymentId, amount, reason, status, refundId, opsUserId, error, retryDelayMinutes(1)],
+    );
     if (status === 'processed') {
       await c.query('UPDATE payments SET status=$2 WHERE id=$1', [paymentId, done.n + amount === p.amount_paise ? 'refunded' : 'partially_refunded']);
     }

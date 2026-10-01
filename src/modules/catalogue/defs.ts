@@ -49,6 +49,8 @@ export interface ServiceDef<O = any> {
   firstDoseMode?(o: O): 'with_doctor' | 'safe_team' | 'at_hospital' | null;
   /** Visit schedule. Default: one visit at `firstAt` (null = as soon as possible). */
   schedule?(o: O, firstAt: Date | null, now: Date): Array<Date | null>;
+  /** How long one visit blocks the professional's calendar. Default 90 minutes. */
+  visitMinutes?(o: O): number;
 }
 
 const line = (row: OptionRow, qty = 1, perVisit = false): LineItem => ({
@@ -73,6 +75,8 @@ export function istAt(date: string, hh: number, mm = 0): Date {
 export function scheduleFor(def: ServiceDef, o: unknown, firstAt: Date | null, now = new Date()): Array<Date | null> {
   return def.schedule ? def.schedule(o, firstAt, now) : [firstAt];
 }
+
+export const visitMinutesFor = (def: ServiceDef, o: unknown) => def.visitMinutes?.(o) ?? 90;
 
 const lead = (role: ProviderRole): SlotSpec => ({ role, role_in_visit: 'lead', remote: false });
 const assist = (role: ProviderRole): SlotSpec => ({ role, role_in_visit: 'assist', remote: false });
@@ -126,6 +130,7 @@ const specialistVisit: ServiceDef<z.infer<typeof specialistOptions>> = {
   lines: (_o, opt) => [line(opt('nurse_component')), line(opt('consultant_fee'))],
   // Consultant leads remotely over video; the nurse is at home taking vitals.
   slots: () => [{ role: 'consultant', role_in_visit: 'lead', remote: true }, assist('staff_nurse')],
+  visitMinutes: () => 60,
   requiresPrescription: () => false,
 };
 
@@ -203,6 +208,7 @@ const elderCare: ServiceDef<z.infer<typeof elderOptions>> = {
   lines: (o, opt) => [line(opt(o.shift === 'day' ? 'shift_day' : 'shift_night'), DURATION_DAYS[o.duration], true)],
   slots: () => [lead('caregiver')],
   requiresPrescription: () => false,
+  visitMinutes: (o) => (o.shift === 'day' ? 7 * 60 : 10 * 60),
   // One shift per day from start_date: day 10 am–5 pm, night 9 pm–7 am (IST).
   schedule: (o) => {
     const first = o.shift === 'day' ? istAt(o.start_date, 10) : istAt(o.start_date, 21);

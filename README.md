@@ -30,7 +30,7 @@ npm test         # needs Postgres+PostGIS and Redis; uses kmdoch_test and Redis 
 npm run typecheck
 ```
 
-`test/acceptance.test.ts` covers the ten acceptance tests in spec §13, one test per item. `test/features.test.ts` covers multi-visit series, estimate true-up with automatic refunds, provider cancellation with re-assignment, and ratings. `test/flows.test.ts` runs the end-to-end flows: auth rotation, the full visit lifecycle through invoice and payout, multi-provider and first-dose visits, the photo prescription → pharmacist → Schedule H dispatch flow, webhooks and refunds, ambulance dispatch and ack timeout, the jobs, and the WebSocket gateway. Tests run against real Postgres/PostGIS and Redis. Nothing is mocked except the external vendors (SMS, payments, storage), which use dev adapters.
+`test/acceptance.test.ts` covers the ten acceptance tests in spec §13, one test per item. `test/features.test.ts` covers multi-visit series, estimate true-up with automatic refunds, provider cancellation with re-assignment, and ratings. `test/scheduling-billing.test.ts` covers double-booking protection, rescheduling, PDF receipts, refund retries and rate limits. `test/flows.test.ts` runs the end-to-end flows: auth rotation, the full visit lifecycle through invoice and payout, multi-provider and first-dose visits, the photo prescription → pharmacist → Schedule H dispatch flow, webhooks and refunds, ambulance dispatch and ack timeout, the jobs, and the WebSocket gateway. Tests run against real Postgres/PostGIS and Redis. Nothing is mocked except the external vendors (SMS, payments, storage), which use dev adapters.
 
 | §13 | Test |
 |---|---|

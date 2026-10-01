@@ -7,6 +7,7 @@ import type { Ctx } from './context.js';
 import { AppError } from './lib/errors.js';
 import { authPlugin } from './plugins/auth.js';
 import { idempotencyPlugin } from './plugins/idempotency.js';
+import { rateLimitPlugin } from './plugins/rate-limit.js';
 import { realtimeGateway } from './realtime/gateway.js';
 import authRoutes from './modules/auth/routes.js';
 import catalogueRoutes from './modules/catalogue/routes.js';
@@ -68,6 +69,7 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   });
 
   await app.register(authPlugin, { ctx });
+  await app.register(rateLimitPlugin, { ctx });
   await app.register(idempotencyPlugin, { ctx });
 
   app.get('/healthz', { config: { public: true }, schema: { hide: true } }, async () => {

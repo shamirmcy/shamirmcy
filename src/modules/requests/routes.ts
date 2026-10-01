@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Ctx } from '../../context.js';
 import { IdParams, typed, Uuid } from '../../lib/http.js';
 import { requireApp } from '../../plugins/auth.js';
-import { cancelByPatient, cancelOccurrence, createServiceRequest, getTracking } from './service.js';
+import { cancelByPatient, cancelOccurrence, createServiceRequest, getTracking, rescheduleOccurrence } from './service.js';
 import { rateRequest } from './ratings.js';
 import { STATUSES } from './state.js';
 
@@ -38,6 +38,7 @@ export const TrackingSchema = z.strictObject({
   line_items: z.array(z.strictObject({ code: z.string(), name: z.string(), unit_price_paise: z.number().int(), qty: z.number().int(), amount_paise: z.number().int() })),
   visits: z.array(z.strictObject({ seq: z.number().int(), scheduled_for: z.string().nullable(), status: z.string() })),
   can_rate: z.boolean(),
+  invoice_id: z.string().nullable(),
   cancellable: z.boolean(),
   created_at: z.string(),
 });
@@ -95,6 +96,18 @@ export default async function requestRoutes(fastify: FastifyInstance, ctx: Ctx) 
     async (req) => {
       requireApp(req, 'patient');
       return cancelOccurrence(ctx, req.auth.userId, req.params.id, req.params.seq);
+    },
+  );
+
+  app.post(
+    '/service-requests/:id/visits/:seq/reschedule',
+    {
+      config: { idempotent: true },
+      schema: { tags: ['requests'], params: z.object({ id: Uuid, seq: z.coerce.number().int().min(1) }), body: z.object({ scheduled_for: z.string().datetime({ offset: true }) }) },
+    },
+    async (req) => {
+      requireApp(req, 'patient');
+      return rescheduleOccurrence(ctx, req.auth.userId, req.params.id, req.params.seq, req.body.scheduled_for);
     },
   );
 

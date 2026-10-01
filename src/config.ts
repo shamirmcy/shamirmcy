@@ -72,6 +72,7 @@ export interface AppConfig {
   visitCodeMaxAttempts: number;
   ambulance: { ackTimeoutSeconds: number; emergencyNumber: string };
   pingRetentionDays: number;
+  rateLimit: { authedPerMinute: number; publicPerMinute: number };
   defaultPlatformFeeBps: number;
   timezone: 'Asia/Kolkata';
 }
@@ -105,6 +106,7 @@ export function loadConfig(overrides: Partial<Record<keyof Env, string>> = {}): 
     visitCodeMaxAttempts: 5,
     ambulance: { ackTimeoutSeconds: 45, emergencyNumber: '108' },
     pingRetentionDays: 30,
+    rateLimit: { authedPerMinute: 300, publicPerMinute: 60 },
     defaultPlatformFeeBps: 2000,
     timezone: 'Asia/Kolkata',
   };
