@@ -3,7 +3,8 @@ import type { Ctx } from '../../context.js';
 import { AppError } from '../../lib/errors.js';
 import { many, maybeOne, one, tx, type Queryable, type TxClient } from '../../lib/db.js';
 import { clientMeta } from '../../lib/http.js';
-import { getDef } from '../catalogue/defs.js';
+import { getDef, scheduleFor } from '../catalogue/defs.js';
+import { settleRequest } from '../commerce/settlement.js';
 import { consumeQuote, publicLine } from '../catalogue/service.js';
 import { recordRequestConsents, type ConsentInput } from '../consents/service.js';
 import { assertCanBook, getFamilyLink } from '../access.js';
@@ -56,7 +57,10 @@ export async function createServiceRequest(ctx: Ctx, req: FastifyRequest, input:
       if (!rx) throw new AppError('VALIDATION_ERROR', 'prescription_id must be a signed prescription for this patient');
     }
 
-    const scheduledFor = input.scheduled_for ?? (quote.options?.video_slot as string | undefined) ?? null;
+    // Visit schedule: one occurrence for single visits, several for dressing series / elder-care shifts.
+    const firstAt = input.scheduled_for ?? (quote.options?.video_slot as string | undefined) ?? null;
+    const occurrences = scheduleFor(def, quote.options, firstAt ? new Date(firstAt) : null);
+    const scheduledFor = occurrences[0] ?? null;
     const sr = await one(
       c,
       `INSERT INTO service_requests (patient_id, booked_by_user_id, service_code, options, address_id, symptoms_enc, note_enc,
@@ -83,6 +87,9 @@ export async function createServiceRequest(ctx: Ctx, req: FastifyRequest, input:
 
     for (const s of def.slots(quote.options)) {
       await c.query('INSERT INTO request_slots (request_id, role, role_in_visit, remote) VALUES ($1,$2,$3,$4)', [sr.id, s.role, s.role_in_visit, s.remote]);
+    }
+    for (const [i, at] of occurrences.entries()) {
+      await c.query('INSERT INTO visit_occurrences (request_id, seq, scheduled_for) VALUES ($1,$2,$3)', [sr.id, i + 1, at]);
     }
     for (const a of input.attachments ?? []) await attachUpload(c, sr.id, userId, a.kind, a.blob_key);
 
@@ -156,6 +163,8 @@ export async function getTracking(ctx: Ctx, userId: string, requestId: string) {
       verified: t.verification_status === 'verified',
     })),
   );
+  const visits = await many(ctx.db, 'SELECT seq, scheduled_for, status FROM visit_occurrences WHERE request_id=$1 ORDER BY seq', [sr.id]);
+  const rated = await maybeOne(ctx.db, 'SELECT 1 FROM ratings WHERE request_id=$1 LIMIT 1', [sr.id]);
   const status = sr.status as RequestStatus;
   const showCode = ['confirmed', 'provider_arrived'].includes(status);
   const code = showCode ? await maybeOne(ctx.db, 'SELECT code_enc FROM visit_codes WHERE request_id=$1', [sr.id]) : null;
@@ -173,7 +182,10 @@ export async function getTracking(ctx: Ctx, userId: string, requestId: string) {
     visit_code_last_shared: Boolean(code),
     scheduled_for: sr.scheduled_for ? (sr.scheduled_for as Date).toISOString() : null,
     total_paise: sr.total_paise as number,
+    final_total_paise: (sr.final_total_paise as number | null) ?? null,
     line_items: (sr.line_items as any[]).map(publicLine),
+    visits: visits.map((v) => ({ seq: v.seq as number, scheduled_for: v.scheduled_for ? (v.scheduled_for as Date).toISOString() : null, status: v.status as string })),
+    can_rate: providers.length > 0 && visits.some((v) => v.status === 'completed') && !rated,
     cancellable: !TERMINAL.has(status) && !['provider_arrived', 'in_progress'].includes(status),
     created_at: (sr.created_at as Date).toISOString(),
   };
@@ -186,26 +198,55 @@ export async function cancelByPatient(ctx: Ctx, userId: string, requestId: strin
     if (['provider_arrived', 'in_progress'].includes(status) || TERMINAL.has(status)) {
       throw new AppError('INVALID_TRANSITION', 'This request can no longer be cancelled');
     }
+    const done = await one<{ n: number }>(c, `SELECT count(*)::int AS n FROM visit_occurrences WHERE request_id=$1 AND status='completed'`, [sr.id]);
     // Free before confirmation. After confirmation the fee comes from config (OPEN ITEM: business to set; default 0).
+    // Stopping a series part-way has no fee: only completed visits are billed.
     let fee = 0;
-    if (status === 'confirmed') {
+    if (status === 'confirmed' && done.n === 0) {
       const cfg = await maybeOne(c, `SELECT value FROM app_config WHERE key='cancellation_fee_after_confirmed_paise'`);
       fee = Number(cfg?.value ?? 0);
     }
-    await c.query('UPDATE service_requests SET cancellation_fee_paise=$2 WHERE id=$1', [sr.id, fee]);
+    await c.query('UPDATE service_requests SET cancellation_fee_paise=$2, eta_minutes=NULL, expected_by=NULL WHERE id=$1', [sr.id, fee]);
+    await c.query(`UPDATE visit_occurrences SET status='cancelled', cancelled_reason='patient_cancelled' WHERE request_id=$1 AND status='scheduled'`, [sr.id]);
     await transition(ctx, c, sr.id, 'cancelled_by_patient', { type: 'patient', id: userId }, { reason: reason ?? null });
     await releaseAssignments(ctx, c, sr.id, 'cancelled');
-    return { id: sr.id, status: 'cancelled_by_patient', cancellation_fee_paise: fee };
+    const settled = await settleRequest(ctx, c, sr.id, 'cancelled');
+    return { id: sr.id, status: 'cancelled_by_patient', cancellation_fee_paise: fee, final_total_paise: settled.final_total_paise, refund_due_paise: settled.refund_due_paise };
+  });
+}
+
+/** Skip one future visit of a series. Only completed visits are billed. */
+export async function cancelOccurrence(ctx: Ctx, userId: string, requestId: string, seq: number) {
+  return tx(ctx.db, async (c) => {
+    const sr = await loadRequestForPatientUser(c, userId, requestId);
+    if (TERMINAL.has(sr.status)) throw new AppError('INVALID_TRANSITION', 'This request is closed');
+    const occ = await maybeOne(c, `UPDATE visit_occurrences SET status='cancelled', cancelled_reason='patient_skipped' WHERE request_id=$1 AND seq=$2 AND status='scheduled' RETURNING seq`, [sr.id, seq]);
+    if (!occ) throw new AppError('NOT_FOUND', 'No upcoming visit with that number');
+    const remaining = await one<{ n: number }>(c, `SELECT count(*)::int AS n FROM visit_occurrences WHERE request_id=$1 AND status IN ('scheduled','in_progress')`, [sr.id]);
+    if (remaining.n === 0) {
+      // Nothing left to do: close out the series (or cancel it if nothing was ever done).
+      const done = await one<{ n: number }>(c, `SELECT count(*)::int AS n FROM visit_occurrences WHERE request_id=$1 AND status='completed'`, [sr.id]);
+      if (done.n > 0 && sr.status === 'confirmed') {
+        await transition(ctx, c, sr.id, 'completed', { type: 'patient', id: userId }, { reason: 'remaining_visits_skipped' });
+        await releaseAssignments(ctx, c, sr.id, 'withdrawn', { keepAccepted: true });
+        await settleRequest(ctx, c, sr.id, 'completed');
+      } else {
+        await transition(ctx, c, sr.id, 'cancelled_by_patient', { type: 'patient', id: userId }, { reason: 'all_visits_skipped' });
+        await releaseAssignments(ctx, c, sr.id, 'cancelled');
+        await settleRequest(ctx, c, sr.id, 'cancelled');
+      }
+    }
+    return { id: sr.id, seq, status: 'cancelled' };
   });
 }
 
 /** Withdraw open offers / cancel accepted assignments and free providers. */
-export async function releaseAssignments(ctx: Ctx, c: TxClient, requestId: string, outcome: 'cancelled' | 'withdrawn') {
+export async function releaseAssignments(ctx: Ctx, c: TxClient, requestId: string, outcome: 'cancelled' | 'withdrawn', opts: { keepAccepted?: boolean } = {}) {
   const rows = await many(
     c,
     `UPDATE request_assignments SET outcome=$2, responded_at=COALESCE(responded_at, now())
-     WHERE request_id=$1 AND outcome IN ('offered','accepted') RETURNING provider_id`,
-    [requestId, outcome],
+     WHERE request_id=$1 AND (outcome='offered' OR (outcome='accepted' AND NOT $3)) RETURNING provider_id`,
+    [requestId, outcome, Boolean(opts.keepAccepted)],
   );
   await c.query('UPDATE provider_sessions SET active_job_id=NULL WHERE active_job_id=$1', [requestId]);
   for (const r of rows) {

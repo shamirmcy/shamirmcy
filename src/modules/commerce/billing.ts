@@ -22,8 +22,12 @@ function financialYear(d: Date) {
   return `${y}-${String((y + 1) % 100).padStart(2, '0')}`;
 }
 
-/** Ledger lines for each provider on a completed request, from each line item's payout_rule. */
-export async function createPayoutLines(c: Queryable, requestId: string) {
+/**
+ * Ledger lines for providers from each line item's payout_rule.
+ *  - `{ visitSeq }`: per-visit lines for that one completed visit (code suffixed `#seq`);
+ *  - `{ final: true }`: the once-per-request lines, when the request completes.
+ */
+export async function createPayoutLines(c: Queryable, requestId: string, opts: { visitSeq: number } | { final: true }) {
   const sr = await one(c, 'SELECT line_items FROM service_requests WHERE id=$1', [requestId]);
   const team = await many(
     c,
@@ -32,13 +36,17 @@ export async function createPayoutLines(c: Queryable, requestId: string) {
   );
   for (const li of sr.line_items as LineItem[]) {
     if (!li.payee_role) continue;
+    const perVisit = Boolean(li.per_visit);
+    if ('visitSeq' in opts !== perVisit) continue;
     const payee = team.find((t) => t.role === li.payee_role);
     if (!payee) continue;
-    const { net, fee } = splitPayout(li.amount_paise, li.payout_rule as PayoutRule);
+    const gross = perVisit ? li.unit_price_paise : li.amount_paise;
+    const code = 'visitSeq' in opts ? `${li.option_code}#${opts.visitSeq}` : li.option_code;
+    const { net, fee } = splitPayout(gross, li.payout_rule as PayoutRule);
     await c.query(
       `INSERT INTO payout_lines (provider_id, request_id, option_code, gross_paise, platform_fee_paise, net_paise)
        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-      [payee.provider_id, requestId, li.option_code, li.amount_paise, fee, net],
+      [payee.provider_id, requestId, code, gross, fee, net],
     );
   }
 }

@@ -27,6 +27,10 @@ export interface LineItem {
   amount_paise: number;
   payee_role: ProviderRole | null;
   payout_rule: PayoutRule;
+  /** Billed and paid out per completed visit (series services). */
+  per_visit?: boolean;
+  /** Quoted price is an estimate ("up to" / "about"); the actual cost is recorded at the visit and never exceeds it. */
+  estimate?: boolean;
 }
 
 export interface SlotSpec {
@@ -43,9 +47,11 @@ export interface ServiceDef<O = any> {
   slots(o: O): SlotSpec[];
   requiresPrescription(o: O): boolean;
   firstDoseMode?(o: O): 'with_doctor' | 'safe_team' | 'at_hospital' | null;
+  /** Visit schedule. Default: one visit at `firstAt` (null = as soon as possible). */
+  schedule?(o: O, firstAt: Date | null, now: Date): Array<Date | null>;
 }
 
-const line = (row: OptionRow, qty = 1): LineItem => ({
+const line = (row: OptionRow, qty = 1, perVisit = false): LineItem => ({
   option_code: row.code,
   name: row.name,
   unit_price_paise: row.price_paise,
@@ -53,7 +59,20 @@ const line = (row: OptionRow, qty = 1): LineItem => ({
   amount_paise: row.price_paise * qty,
   payee_role: row.payee_role,
   payout_rule: row.payout_rule,
+  ...(perVisit ? { per_visit: true } : {}),
+  ...(row.meta?.estimate ? { estimate: true } : {}),
 });
+
+const DAY_MS = 86_400_000;
+
+/** A wall-clock time in IST on a YYYY-MM-DD date, as a UTC instant. */
+export function istAt(date: string, hh: number, mm = 0): Date {
+  return new Date(Date.parse(`${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00+05:30`));
+}
+
+export function scheduleFor(def: ServiceDef, o: unknown, firstAt: Date | null, now = new Date()): Array<Date | null> {
+  return def.schedule ? def.schedule(o, firstAt, now) : [firstAt];
+}
 
 const lead = (role: ProviderRole): SlotSpec => ({ role, role_in_visit: 'lead', remote: false });
 const assist = (role: ProviderRole): SlotSpec => ({ role, role_in_visit: 'assist', remote: false });
@@ -152,10 +171,17 @@ const woundDressing: ServiceDef<z.infer<typeof dressingOptions>> = {
   optionsSchema: dressingOptions,
   lines: (o, opt) => {
     const n = FREQUENCY_VISITS[o.frequency];
-    return [line(opt('visit'), n), line(opt('materials'), n)];
+    return [line(opt('visit'), n, true), line(opt('materials'), n, true)];
   },
   slots: () => [lead('staff_nurse')],
   requiresPrescription: () => false,
+  // Daily ×5 or alternate days ×7, same nurse, from the first visit.
+  schedule: (o, firstAt, now) => {
+    const n = FREQUENCY_VISITS[o.frequency];
+    const gap = o.frequency === 'alternate_x7' ? 2 : 1;
+    const base = firstAt ?? now;
+    return Array.from({ length: n }, (_, i) => (i === 0 ? firstAt : new Date(base.getTime() + i * gap * DAY_MS)));
+  },
 };
 
 const catheterisation: ServiceDef<Record<string, never>> = {
@@ -174,9 +200,14 @@ const elderCare: ServiceDef<z.infer<typeof elderOptions>> = {
   code: 'elder_care',
   kind: 'service_request',
   optionsSchema: elderOptions,
-  lines: (o, opt) => [line(opt(o.shift === 'day' ? 'shift_day' : 'shift_night'), DURATION_DAYS[o.duration])],
+  lines: (o, opt) => [line(opt(o.shift === 'day' ? 'shift_day' : 'shift_night'), DURATION_DAYS[o.duration], true)],
   slots: () => [lead('caregiver')],
   requiresPrescription: () => false,
+  // One shift per day from start_date: day 10 am–5 pm, night 9 pm–7 am (IST).
+  schedule: (o) => {
+    const first = o.shift === 'day' ? istAt(o.start_date, 10) : istAt(o.start_date, 21);
+    return Array.from({ length: DURATION_DAYS[o.duration] }, (_, i) => new Date(first.getTime() + i * DAY_MS));
+  },
 };
 
 const labOptions = z.object({ tests: z.array(z.enum(LAB_TESTS)).min(1).max(LAB_TESTS.length), fasting: z.boolean().default(false) }).strict();

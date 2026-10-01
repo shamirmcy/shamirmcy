@@ -4,7 +4,7 @@ Spec §14 asks to restate the data model and flag anything unsafe, unclear or ov
 
 ## 1. Data model (as built)
 
-Schema: `src/db/migrations/001_init.sql`. UUIDv7 keys (`uuid_generate_v7()` in SQL), `created_at`/`updated_at` everywhere, `deleted_at` on user-owned rows, money in integer paise, times in `timestamptz` (UTC).
+Schema: `src/db/migrations/` (`001_init.sql`, `002_series_ratings_adjustments.sql`). UUIDv7 keys (`uuid_generate_v7()` in SQL), `created_at`/`updated_at` everywhere, `deleted_at` on user-owned rows, money in integer paise, times in `timestamptz` (UTC).
 
 | Area | Tables | Notes |
 |---|---|---|
@@ -14,7 +14,7 @@ Schema: `src/db/migrations/001_init.sql`. UUIDv7 keys (`uuid_generate_v7()` in S
 | Providers | `providers`, `provider_bios`, `provider_documents`, `provider_sessions`, `location_pings` | `provider_sessions` is the duty/location state; a Redis copy (`prov:loc:{id}`, 5-min TTL) is the hot presence. `location_pings` is partitioned by day and dropped after 30 days. |
 | Consent / terms | `consent_templates`, `consents`, `provider_terms`, `provider_terms_acceptances` | Versioned; new versions are inserted, never edited. Consents record timestamp, version, IP and device. |
 | Catalogue | `services`, `service_options`, `quotes` | Prices and `payout_rule` live in `service_options` (editable by ops). Service *structure* (which options a service combines, which roles it needs) lives in code: `src/modules/catalogue/defs.ts`. |
-| Requests | `service_requests`, `request_slots`, `request_assignments`, `request_events`, `visit_codes`, `request_attachments`, `video_sessions` | **Added `request_slots`**: one row per role needed for a visit (e.g. consultant lead + nurse assist). An assignment fills a slot; a partial unique index guarantees one accepted assignment per slot. `request_events` is append-only (trigger). |
+| Requests | `service_requests`, `visit_occurrences`, `request_adjustments`, `ratings`, `provider_cancellations`, `request_slots`, `request_assignments`, `request_events`, `visit_codes`, `request_attachments`, `video_sessions` | **Added `request_slots`**: one row per role needed for a visit (e.g. consultant lead + nurse assist). An assignment fills a slot; a partial unique index guarantees one accepted assignment per slot. `request_events` is append-only (trigger). |
 | Clinical | `consultations`, `prescriptions`, `prescription_items`, `prescription_photos`, `clinical_rules`, `clinical_alerts`, `lab_orders`, `lab_results` | Clinical text is AES-256-GCM encrypted in the app (`*_enc`). Triggers make signed prescriptions and their items immutable and undeletable. |
 | Partners | `partners`, `partner_members`, `facilities`, `ambulance_vehicles` | **Added** — the spec names partners as a role but needs an organisation + membership model (pharmacist, crew…). |
 | Commerce | `medicines`, `pharmacy_orders`, `pharmacy_order_items`, `equipment_rentals`, `ambulance_runs`, `payments`, `payment_webhook_events`, `refunds`, `invoices`, `payout_lines`, `payouts` | **Added `payout_lines`** (per-visit ledger) so weekly `payouts` are a roll-up, and `payment_webhook_events` for webhook de-duplication. |
@@ -59,15 +59,16 @@ One deviation from the spec diagram: `confirmed → assigning` and `no_provider 
 |---|---|
 | IV "with your doctor +₹599 + ₹399" | ₹399 is the nurse visit itself: total = ₹399 visit + ₹599 doctor + kit. |
 | Safe first-dose team ₹999 | Split technician ₹600 + nurse ₹399 so each is paid; later visits ₹399. |
-| Kit "up to ₹600", antibiotic "about ₹250", materials "~₹120" | The estimate is charged at booking. A true-up/refund of the difference is **not built**. |
+| Kit "up to ₹600", antibiotic "about ₹250", materials "~₹120" | Lines flagged `meta.estimate`. The quote is charged up front; the professional records the actual cost (`POST /provider/visits/:id/actuals`, never above the quote — KM DocH absorbs any excess); settlement bills the lower figure and auto-refunds the difference. |
 | Dressing materials, lab test fees, kits, equipment | `payee_role = null` → platform/partner revenue; partner settlement is out of scope. ECG paid to the lab technician at 20%. |
-| Multi-visit services (dressing ×5/×7, elder care week/month) | One request covers the series and one provider is assigned. Scheduling each later visit is **not built**. |
-| Payment timing | Not specified. Booking is never blocked on payment; patients can pay by UPI/card at any time or by cash. |
+| Multi-visit services (dressing ×5/×7, elder care week/month) | One request, many `visit_occurrences`, one provider for continuity. Dressing: first visit ASAP (or `scheduled_for`), then daily / every 2 days. Elder care: one shift per day from `start_date` at 10 am or 9 pm IST. Each visit has its own door code; after each visit the request returns to `confirmed`. Patients can skip a visit or stop the series; only completed visits are billed and paid out. Visits >6 h overdue are marked missed (hourly sweep, ops alerted). |
+| Payment timing | Not specified. Booking is never blocked on payment; patients can pay by UPI/card at any time or by cash. `POST /payments` charges what is still due (settled total once known, else the quote, minus anything captured). |
+| Ratings | One rating per professional per request, after at least one completed visit. Feeds `providers.rating_avg` (used in ranking). Providers see average, count and star breakdown only. ≤2 stars alerts ops. |
 | Cancellation after `confirmed` | Fee from `app_config.cancellation_fee_after_confirmed_paise` (seeded 0). |
-| Provider cancelling a confirmed visit | `cancelled_by_provider` is terminal per spec, but no endpoint exists. Ops should re-assign instead. |
+| Provider cancelling a confirmed visit | `POST /provider/requests/:id/cancel` (before arrival only) cancels their assignment and moves the request back to `assigning`; the engine re-offers it to others (never the canceller), else `no_provider`. 3+ cancellations in 30 days alert ops. The terminal `cancelled_by_provider` status is kept but unused. |
 | `reviewing` triage | Off by default; enable per service via `app_config.triage_services`, then ops approves. |
 | Specialist video slot | Consultant is `lead` + remote; nurse is `assist` in person; the slot time becomes `scheduled_for`. |
-| Overlapping jobs | "No overlapping job" = no active in-person job now. Future scheduled jobs are not checked. |
+| Overlapping jobs | "No overlapping job" = no active in-person job now. A visit booked for later (>2 h) only holds the provider once they tap **on my way** (`POST /provider/visits/:id/on-my-way`), which also starts the patient's minutes-only ETA. Clashes between two future bookings are not checked. |
 | Lab partner | Assigned when results are posted (first lab to report), not at booking. |
 
 ### Overbuilt — kept, but could be simpler
@@ -83,4 +84,4 @@ Partner-desk phone (`PARTNER_DESK_PHONE`), ambulance per-km rates (seeded placeh
 
 ## 5. Not built yet
 
-Patient ratings (feeds `rating_avg`), subsequent-visit scheduling for series services, kit price true-up, provider-initiated cancellation, number masking, WhatsApp/voice delivery, real OCR/video vendors, bank payout rail, invoice PDFs (invoice rows exist), an admin UI (ops is API-only), per-route rate limits beyond OTP.
+Number masking, WhatsApp/voice delivery, real OCR/video vendors, bank payout rail, invoice PDFs (invoice rows exist), an admin UI (ops is API-only), per-route rate limits beyond OTP, rescheduling an individual series visit (patients can skip one; re-booking covers the rest), clash detection between two future bookings, retrying failed settlement refunds automatically (they are recorded as `failed` for ops).

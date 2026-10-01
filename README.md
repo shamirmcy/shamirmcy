@@ -30,7 +30,7 @@ npm test         # needs Postgres+PostGIS and Redis; uses kmdoch_test and Redis 
 npm run typecheck
 ```
 
-`test/acceptance.test.ts` covers the ten acceptance tests in spec §13, one test per item. `test/flows.test.ts` runs the end-to-end flows: auth rotation, the full visit lifecycle through invoice and payout, multi-provider and first-dose visits, the photo prescription → pharmacist → Schedule H dispatch flow, webhooks and refunds, ambulance dispatch and ack timeout, the jobs, and the WebSocket gateway. Tests run against real Postgres/PostGIS and Redis. Nothing is mocked except the external vendors (SMS, payments, storage), which use dev adapters.
+`test/acceptance.test.ts` covers the ten acceptance tests in spec §13, one test per item. `test/features.test.ts` covers multi-visit series, estimate true-up with automatic refunds, provider cancellation with re-assignment, and ratings. `test/flows.test.ts` runs the end-to-end flows: auth rotation, the full visit lifecycle through invoice and payout, multi-provider and first-dose visits, the photo prescription → pharmacist → Schedule H dispatch flow, webhooks and refunds, ambulance dispatch and ack timeout, the jobs, and the WebSocket gateway. Tests run against real Postgres/PostGIS and Redis. Nothing is mocked except the external vendors (SMS, payments, storage), which use dev adapters.
 
 | §13 | Test |
 |---|---|
@@ -62,13 +62,13 @@ src/
     auth/        OTP, refresh rotation, /me
     catalogue/   service definitions (code) + prices (DB), signed quotes
     consents/    templates, recording, withdrawal
-    requests/    state machine (transition()), booking, privacy-safe tracking, cancel
+    requests/    state machine (transition()), booking + visit schedule, privacy-safe tracking, cancel/skip, ratings
     assignment/  candidates, ETA (cached, with fallback), ranking, offers, accept lock, expiry
     providers/   duty, location, terms, today, request view (area only until accepted), profile, bio, fees, payouts
-    visits/      door code, start, complete (invoice + payout lines), video join
+    visits/      on-my-way, door code per visit, start, complete (series aware), actual costs, provider cancel, missed-visit sweep
     clinical/    consultations, typed/photo prescriptions, alerts, PDF, OCR, transcription
     records/     health records, unified orders
-    commerce/    pharmacy, rentals, ambulance, payments, webhooks, refunds, billing
+    commerce/    pharmacy, rentals, ambulance, payments, webhooks, refunds, billing, settlement (final bill + auto-refund)
     partners/    pharmacist / lab / equipment / ambulance crew endpoints
     ops/         verification, live board, manual assignment, catalogue, consents/terms, bios, refunds, partners (audited)
     notifications/  en/ta/kn/hi templates; push → SMS → voice

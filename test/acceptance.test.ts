@@ -36,7 +36,13 @@ describe('§13 acceptance', () => {
       const acc = await call(env, 'POST', `/provider/requests/${r.body.id}/accept`, { token: prov.token, idem: true, body: {} });
       expect(acc.status, JSON.stringify(acc.body)).toBe(200);
 
-      const t = await call(env, 'GET', `/service-requests/${r.body.id}`, { token: pt.token });
+      let t = await call(env, 'GET', `/service-requests/${r.body.id}`, { token: pt.token });
+      if (t.body.scheduled_for && Date.parse(t.body.scheduled_for) > Date.now() + 2 * 3600e3) {
+        // Booked for later: no ETA until the professional sets off.
+        expect(t.body.eta_minutes).toBeNull();
+        expect((await call(env, 'POST', `/provider/visits/${r.body.id}/on-my-way`, { token: prov.token })).status).toBe(200);
+        t = await call(env, 'GET', `/service-requests/${r.body.id}`, { token: pt.token });
+      }
       expect(t.status).toBe(200);
       expect(t.body.status).toBe('confirmed');
       expect(t.body.eta_minutes).toBeGreaterThan(0);

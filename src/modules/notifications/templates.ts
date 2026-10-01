@@ -13,7 +13,9 @@ export type NotificationEvent =
   | 'new_request_offer'
   | 'request_cancelled'
   | 'emergency_dispatched'
-  | 'rental_ending';
+  | 'rental_ending'
+  | 'provider_cancelled'
+  | 'refund_issued';
 
 type Tpl = { title: string; body: string };
 
@@ -105,6 +107,18 @@ export const TEMPLATES: Record<NotificationEvent, Record<Lang, Tpl>> = {
     ta: { title: 'வாடகை முடிவடைகிறது', body: 'உங்கள் உபகரண வாடகை {date} அன்று முடிகிறது. செயலியில் நீட்டிக்கவும்.' },
     kn: { title: 'ಬಾಡಿಗೆ ಮುಕ್ತಾಯ', body: 'ನಿಮ್ಮ ಉಪಕರಣ ಬಾಡಿಗೆ {date} ರಂದು ಮುಗಿಯುತ್ತದೆ. ಆ್ಯಪ್‌ನಲ್ಲಿ ವಿಸ್ತರಿಸಿ.' },
     hi: { title: 'किराया समाप्त होने वाला है', body: 'आपका उपकरण किराया {date} को समाप्त होगा। ऐप में बढ़ाएँ या वापसी तय करें।' },
+  },
+  provider_cancelled: {
+    en: { title: 'Finding another professional', body: 'Your care professional can no longer make it. We are finding someone else for you.' },
+    ta: { title: 'வேறு பராமரிப்பாளரைத் தேடுகிறோம்', body: 'உங்கள் பராமரிப்பாளரால் வர இயலவில்லை. வேறொருவரைத் தேடுகிறோம்.' },
+    kn: { title: 'ಬೇರೆ ವೃತ್ತಿಪರರನ್ನು ಹುಡುಕುತ್ತಿದ್ದೇವೆ', body: 'ನಿಮ್ಮ ಆರೈಕೆ ವೃತ್ತಿಪರರು ಬರಲು ಸಾಧ್ಯವಿಲ್ಲ. ಬೇರೆಯವರನ್ನು ಹುಡುಕುತ್ತಿದ್ದೇವೆ.' },
+    hi: { title: 'दूसरे विशेषज्ञ की तलाश', body: 'आपके देखभाल विशेषज्ञ अब नहीं आ पाएँगे। हम किसी और को ढूँढ रहे हैं।' },
+  },
+  refund_issued: {
+    en: { title: 'Refund issued', body: '{amount} is being refunded to you.' },
+    ta: { title: 'பணம் திருப்பி அளிக்கப்பட்டது', body: '{amount} உங்களுக்குத் திருப்பி அளிக்கப்படுகிறது.' },
+    kn: { title: 'ಮರುಪಾವತಿ', body: '{amount} ನಿಮಗೆ ಮರುಪಾವತಿಯಾಗುತ್ತಿದೆ.' },
+    hi: { title: 'रिफ़ंड जारी', body: '{amount} आपको वापस किया जा रहा है।' },
   },
 };
 

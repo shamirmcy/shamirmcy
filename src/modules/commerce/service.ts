@@ -7,6 +7,7 @@ import { consumeQuote, loadService } from '../catalogue/service.js';
 import { assertDispatchable } from '../clinical/service.js';
 import { notify } from '../notifications/service.js';
 import { assertAccountActive, zoneForAddress } from '../requests/service.js';
+import { amountDue } from './settlement.js';
 
 // ───────────────────────────── Pharmacy ─────────────────────────────
 
@@ -254,8 +255,14 @@ const TARGET_SQL: Record<string, string> = {
 export async function createPayment(ctx: Ctx, userId: string, input: { target_type: string; target_id: string; method: 'upi' | 'card' | 'cash' }) {
   const t = await maybeOne(ctx.db, TARGET_SQL[input.target_type]!, [input.target_id]);
   if (!t || t.owner !== userId) throw new AppError('NOT_FOUND', 'Nothing to pay for');
-  const paid = await maybeOne(ctx.db, `SELECT 1 FROM payments WHERE target_type=$1 AND target_id=$2 AND status='captured'`, [input.target_type, input.target_id]);
-  if (paid) throw new AppError('CONFLICT', 'Already paid');
+  if (input.target_type === 'service_request') {
+    // Settled total (after series/estimate true-up) less what has already been captured.
+    t.amount = await amountDue(ctx.db, input.target_id);
+    if (t.amount === 0) throw new AppError('CONFLICT', 'Nothing left to pay');
+  } else {
+    const paid = await maybeOne(ctx.db, `SELECT 1 FROM payments WHERE target_type=$1 AND target_id=$2 AND status='captured'`, [input.target_type, input.target_id]);
+    if (paid) throw new AppError('CONFLICT', 'Already paid');
+  }
   if (input.method === 'cash') {
     const p = await one(ctx.db, `INSERT INTO payments (user_id, target_type, target_id, method, amount_paise, status) VALUES ($1,$2,$3,'cash',$4,'pending') RETURNING id`, [
       userId,

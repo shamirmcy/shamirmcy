@@ -8,6 +8,7 @@ import { generatePrescriptionPdf, processPrescriptionOcr } from '../modules/clin
 import { runWeeklyPayouts } from '../modules/commerce/billing.js';
 import { ambulanceAckTimeout, reconcilePayments } from '../modules/commerce/service.js';
 import { deliver, notify } from '../modules/notifications/service.js';
+import { sweepMissedVisits } from '../modules/visits/service.js';
 
 async function followUpReminders(ctx: Ctx) {
   const rows = await many(
@@ -54,5 +55,6 @@ export const jobHandlers: Record<JobName, JobHandler> = {
   'pings.retention': (ctx) => pingRetention(ctx),
   'rentals.reminders': (ctx) => rentalReminders(ctx),
   'ambulance.ack_timeout': (ctx, d) => ambulanceAckTimeout(ctx, d.runId),
+  'visits.sweep': (ctx) => sweepMissedVisits(ctx),
   notify: (ctx, d) => deliver(ctx, d),
 };

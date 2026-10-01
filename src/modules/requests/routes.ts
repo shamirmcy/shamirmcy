@@ -3,7 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import type { Ctx } from '../../context.js';
 import { IdParams, typed, Uuid } from '../../lib/http.js';
 import { requireApp } from '../../plugins/auth.js';
-import { cancelByPatient, createServiceRequest, getTracking } from './service.js';
+import { cancelByPatient, cancelOccurrence, createServiceRequest, getTracking } from './service.js';
+import { rateRequest } from './ratings.js';
 import { STATUSES } from './state.js';
 
 const ProviderCard = z.strictObject({
@@ -33,7 +34,10 @@ export const TrackingSchema = z.strictObject({
   visit_code_last_shared: z.boolean(),
   scheduled_for: z.string().nullable(),
   total_paise: z.number().int(),
+  final_total_paise: z.number().int().nullable(),
   line_items: z.array(z.strictObject({ code: z.string(), name: z.string(), unit_price_paise: z.number().int(), qty: z.number().int(), amount_paise: z.number().int() })),
+  visits: z.array(z.strictObject({ seq: z.number().int(), scheduled_for: z.string().nullable(), status: z.string() })),
+  can_rate: z.boolean(),
   cancellable: z.boolean(),
   created_at: z.string(),
 });
@@ -82,6 +86,30 @@ export default async function requestRoutes(fastify: FastifyInstance, ctx: Ctx) 
     async (req) => {
       requireApp(req, 'patient');
       return cancelByPatient(ctx, req.auth.userId, req.params.id, req.body?.reason);
+    },
+  );
+
+  app.post(
+    '/service-requests/:id/visits/:seq/cancel',
+    { config: { idempotent: true }, schema: { tags: ['requests'], params: z.object({ id: Uuid, seq: z.coerce.number().int().min(1) }) } },
+    async (req) => {
+      requireApp(req, 'patient');
+      return cancelOccurrence(ctx, req.auth.userId, req.params.id, req.params.seq);
+    },
+  );
+
+  app.post(
+    '/service-requests/:id/ratings',
+    {
+      schema: {
+        tags: ['requests'],
+        params: IdParams,
+        body: z.object({ stars: z.number().int().min(1).max(5), comment: z.string().max(1000).optional(), provider_id: Uuid.optional() }),
+      },
+    },
+    async (req, reply) => {
+      requireApp(req, 'patient');
+      return reply.code(201).send(await rateRequest(ctx, req.auth.userId, req.params.id, req.body));
     },
   );
 }

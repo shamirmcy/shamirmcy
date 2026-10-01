@@ -25,7 +25,7 @@ export async function estimateEta(ctx: Ctx, from: LatLng, to: LatLng): Promise<R
 
 const ARRIVING_SOON_MINUTES = 10;
 
-/** Job (every 60 s): refresh ETA for confirmed visits and push minutes-only updates to patients. */
+/** Job (every 60 s): refresh ETA for confirmed visits the provider is travelling to and push minutes-only updates to patients. */
 export async function refreshEtas(ctx: Ctx) {
   const rows = await many(
     ctx.db,
@@ -36,7 +36,7 @@ export async function refreshEtas(ctx: Ctx) {
      JOIN addresses a ON a.id = sr.address_id
      JOIN request_assignments ra ON ra.request_id = sr.id AND ra.outcome='accepted' AND ra.role_in_visit='lead'
      JOIN request_slots rs ON rs.id = ra.slot_id AND NOT rs.remote
-     JOIN provider_sessions s ON s.provider_id = ra.provider_id AND s.on_duty AND s.last_location IS NOT NULL
+     JOIN provider_sessions s ON s.provider_id = ra.provider_id AND s.on_duty AND s.last_location IS NOT NULL AND s.active_job_id = sr.id
      JOIN providers p ON p.id = ra.provider_id JOIN users u ON u.id = p.user_id
      WHERE sr.status = 'confirmed'`,
   );

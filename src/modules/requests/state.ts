@@ -29,9 +29,12 @@ const TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   requested: ['reviewing', 'assigning', 'cancelled_by_patient', 'failed'],
   reviewing: ['assigning', 'cancelled_by_patient', 'failed'],
   assigning: ['confirmed', 'no_provider', 'cancelled_by_patient', 'failed'],
-  confirmed: ['provider_arrived', 'in_progress', 'assigning', 'cancelled_by_patient', 'cancelled_by_provider', 'failed'],
+  // confirmed → assigning: the provider cancelled and the visit is re-assigned.
+  // confirmed → completed: a series whose remaining visits were skipped or missed.
+  confirmed: ['provider_arrived', 'in_progress', 'assigning', 'completed', 'cancelled_by_patient', 'cancelled_by_provider', 'failed'],
   provider_arrived: ['in_progress', 'failed'],
-  in_progress: ['completed', 'failed'],
+  // in_progress → confirmed: one visit of a series is done and more are scheduled.
+  in_progress: ['completed', 'confirmed', 'failed'],
   completed: [],
   cancelled_by_patient: [],
   cancelled_by_provider: [],
@@ -66,6 +69,16 @@ export function canTransition(from: RequestStatus, to: RequestStatus) {
 
 /** Guards that must hold for specific transitions. */
 async function guard(c: TxClient, sr: any, to: RequestStatus) {
+  if ((sr.status === 'in_progress' && (to === 'confirmed' || to === 'completed')) || (sr.status === 'confirmed' && to === 'completed')) {
+    const o = await maybeOne(
+      c,
+      `SELECT count(*) FILTER (WHERE status IN ('scheduled','in_progress'))::int AS open, count(*) FILTER (WHERE status='completed')::int AS done
+       FROM visit_occurrences WHERE request_id=$1`,
+      [sr.id],
+    );
+    if (to === 'confirmed' && !(o.open > 0)) throw new AppError('INVALID_TRANSITION', 'No further visits are scheduled');
+    if (to === 'completed' && (o.open > 0 || o.done === 0)) throw new AppError('INVALID_TRANSITION', 'Visits are still scheduled');
+  }
   if (sr.status === 'draft' && to === 'requested') {
     if (!(await hasRequiredConsents(c, sr.id, sr.service_code))) throw new AppError('CONSENT_REQUIRED', 'Required consents have not been recorded');
     const def = getDef(sr.service_code);

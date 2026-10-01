@@ -58,8 +58,8 @@ const SERVICES: Array<{ code: string; name: string; category: string; window?: n
     description: 'Drip or IV antibiotics at home. Prescription required. Choose how the first dose is supervised.',
     options: [
       { code: 'visit', name: 'Nurse visit', price: 39900, payee: 'staff_nurse', rule: pct() },
-      { code: 'kit_drip', name: 'Drip kit (up to)', price: 60000, payee: null, rule: NONE },
-      { code: 'kit_antibiotic', name: 'Antibiotic IV kit (approx.)', price: 25000, payee: null, rule: NONE },
+      { code: 'kit_drip', name: 'Drip kit (up to)', price: 60000, payee: null, rule: NONE, meta: { estimate: true } },
+      { code: 'kit_antibiotic', name: 'Antibiotic IV kit (approx.)', price: 25000, payee: null, rule: NONE, meta: { estimate: true } },
       { code: 'first_dose_doctor', name: 'First dose with your doctor (present or on video)', price: 59900, payee: 'doctor', rule: pct() },
       // ₹999 safe first-dose team, split technician ₹600 + nurse ₹399 (ASSUMPTION — confirm with business).
       { code: 'first_dose_team_cct', name: 'Safe first-dose team — critical care technician', price: 60000, payee: 'critical_care_technician', rule: pct() },
@@ -74,7 +74,7 @@ const SERVICES: Array<{ code: string; name: string; category: string; window?: n
     description: 'Per visit. Single, daily for 5 days, or alternate days for 7 visits.',
     options: [
       { code: 'visit', name: 'Dressing visit', price: 39900, unit: 'visit', payee: 'staff_nurse', rule: FULL },
-      { code: 'materials', name: 'Dressing materials (approx.)', price: 12000, unit: 'visit', payee: null, rule: NONE },
+      { code: 'materials', name: 'Dressing materials (approx.)', price: 12000, unit: 'visit', payee: null, rule: NONE, meta: { estimate: true } },
     ],
   },
   {

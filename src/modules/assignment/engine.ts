@@ -1,13 +1,16 @@
 import type { Ctx } from '../../context.js';
 import { AppError } from '../../lib/errors.js';
 import { many, maybeOne, one, tx, type Queryable, type TxClient } from '../../lib/db.js';
-import { numericCode, hmac } from '../../lib/crypto.js';
 import { addMinutes, addSeconds } from '../../lib/time.js';
 import type { LatLng } from '../../lib/geo.js';
 import { notify } from '../notifications/service.js';
 import { releaseAssignments, zoneForAddress } from '../requests/service.js';
 import { transition } from '../requests/state.js';
 import { estimateEta } from './eta.js';
+import { issueVisitCode } from '../visits/service.js';
+
+/** Due now (or within 2 hours), as opposed to booked for later. */
+export const isImmediate = (sr: { scheduled_for: Date | null }) => !sr.scheduled_for || new Date(sr.scheduled_for).getTime() <= Date.now() + 2 * 3600_000;
 
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', ta: 'Tamil', kn: 'Kannada', hi: 'Hindi' };
 
@@ -95,7 +98,8 @@ export async function findCandidates(ctx: Ctx, sr: any, slot: any): Promise<Cand
        AND $2 = ANY(p.service_area_zone_ids)
        AND ($5 OR (s.location_consent_at IS NOT NULL AND s.last_location IS NOT NULL
                    AND s.last_location_at > now() - make_interval(secs => $6)))
-       AND NOT EXISTS (SELECT 1 FROM request_assignments x WHERE x.request_id = $4 AND x.provider_id = p.id)
+       -- 'withdrawn' only means someone else took the slot; those providers can be offered it again.
+       AND NOT EXISTS (SELECT 1 FROM request_assignments x WHERE x.request_id = $4 AND x.provider_id = p.id AND x.outcome <> 'withdrawn')
      ORDER BY CASE WHEN $5 THEN 0 ELSE ST_Distance(s.last_location, (SELECT location FROM addresses WHERE id=$7)) END
      LIMIT $8`,
     [slot.role, zone.id, sr.patient_id, sr.id, slot.remote, ctx.config.duty.locationTtlSeconds, sr.address_id, cfg.maxCandidates],
@@ -206,7 +210,8 @@ export async function acceptOffer(ctx: Ctx, providerId: string, requestId: strin
         `UPDATE request_assignments SET outcome='withdrawn', responded_at=now() WHERE slot_id=$1 AND outcome='offered' AND id<>$2 RETURNING provider_id`,
         [slot.id, offer.id],
       );
-      if (!slot.remote && !remoteSupervision) await c.query('UPDATE provider_sessions SET active_job_id=$2 WHERE provider_id=$1', [providerId, requestId]);
+      // Only an immediate visit holds the provider now; a later one is held from "on my way".
+      if (!slot.remote && !remoteSupervision && isImmediate(sr)) await c.query('UPDATE provider_sessions SET active_job_id=$2 WHERE provider_id=$1', [providerId, requestId]);
 
       if (remoteSupervision || slot.remote) {
         const startsAt = sr.scheduled_for ?? new Date();
@@ -226,20 +231,18 @@ export async function acceptOffer(ctx: Ctx, providerId: string, requestId: strin
       return { request_id: requestId, outcome: 'accepted' as const, role_in_visit: roleInVisit };
     });
   } catch (e) {
-    if ((await ctx.redis.get(key)) === providerId) await ctx.redis.del(key);
     if ((e as { code?: string }).code === '23505') throw new AppError('ALREADY_ASSIGNED', 'Another professional has accepted this request');
     throw e;
+  } finally {
+    // The lock only serialises concurrent accepts; once committed, the slot row is the truth.
+    // Released so a later re-assignment of the same slot (provider cancelled) is not blocked.
+    if ((await ctx.redis.get(key)) === providerId) await ctx.redis.del(key);
   }
 }
 
 /** All slots filled: door code, first ETA, `confirmed`, patient notified with name + minutes only. */
 async function confirmRequest(ctx: Ctx, c: TxClient, sr: any) {
-  const code = numericCode(4);
-  await c.query(
-    `INSERT INTO visit_codes (request_id, code_hash, code_enc) VALUES ($1,$2,$3)
-     ON CONFLICT (request_id) DO UPDATE SET code_hash=EXCLUDED.code_hash, code_enc=EXCLUDED.code_enc, attempts=0, verified_at=NULL`,
-    [sr.id, hmac(ctx.config.env.OTP_PEPPER, `${sr.id}:${code}`), ctx.cipher.encrypt(code)],
-  );
+  await issueVisitCode(ctx, c, sr.id);
   const lead = await maybeOne(
     c,
     `SELECT ra.provider_id, u.name, ST_Y(s.last_location::geometry) AS lat, ST_X(s.last_location::geometry) AS lng, rs.remote
@@ -250,7 +253,7 @@ async function confirmRequest(ctx: Ctx, c: TxClient, sr: any) {
     [sr.id],
   );
   let minutes: number | null = null;
-  if (lead?.lat != null) {
+  if (lead?.lat != null && isImmediate(sr)) {
     const addr = await one(c, 'SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng FROM addresses WHERE id=$1', [sr.address_id]);
     minutes = (await estimateEta(ctx, { lat: lead.lat, lng: lead.lng }, { lat: addr.lat, lng: addr.lng })).minutes;
     await c.query('UPDATE service_requests SET eta_minutes=$2, expected_by=$3 WHERE id=$1', [sr.id, minutes, addMinutes(new Date(), minutes)]);

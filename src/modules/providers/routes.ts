@@ -7,7 +7,8 @@ import { clientMeta, IdParams, typed } from '../../lib/http.js';
 import { splitPayout, type PayoutRule } from '../../lib/money.js';
 import { requireProviderId } from '../../plugins/auth.js';
 import { acceptOffer, declineOffer } from '../assignment/engine.js';
-import { completeVisit, markArrived, recordVideoJoin, startVisit } from '../visits/service.js';
+import { cancelByProvider, completeVisit, markArrived, onMyWay, recordActuals, recordVideoJoin, startVisit } from '../visits/service.js';
+import { ratingSummary } from '../requests/ratings.js';
 import { approvedBio, providerCredentials } from './profile.js';
 import { acceptTerms, currentTerms, hasAcceptedCurrentTerms, loadProvider, recordPings, setDuty, setLocationConsent } from './service.js';
 
@@ -59,22 +60,32 @@ export default async function providerRoutes(fastify: FastifyInstance, ctx: Ctx)
        WHERE ra.provider_id=$1 AND ra.outcome='offered' AND ra.expires_at > now() ORDER BY ra.offered_at`,
       [pid],
     );
+    // One row per visit occurrence (series visits appear individually), today and the next 7 days.
     const visits = await many(
       ctx.db,
-      `SELECT sr.id AS request_id, sr.status, sr.service_code, s.name AS service_name, sr.scheduled_for, ra.role_in_visit
+      `SELECT sr.id AS request_id, sr.status, sr.service_code, s.name AS service_name, ra.role_in_visit,
+              o.seq AS visit_seq, (SELECT max(seq) FROM visit_occurrences WHERE request_id=sr.id) AS visit_count,
+              o.scheduled_for, o.status AS visit_status
        FROM request_assignments ra JOIN service_requests sr ON sr.id=ra.request_id JOIN services s ON s.code=sr.service_code
-       WHERE ra.provider_id=$1 AND ra.outcome='accepted'
-         AND (sr.status IN ('confirmed','provider_arrived','in_progress')
-              OR (sr.scheduled_for AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date)
-       ORDER BY COALESCE(sr.scheduled_for, sr.created_at)`,
+       JOIN visit_occurrences o ON o.request_id=sr.id
+       WHERE ra.provider_id=$1 AND ra.outcome='accepted' AND sr.status IN ('confirmed','provider_arrived','in_progress')
+         AND (o.status='in_progress' OR (o.status='scheduled' AND (o.scheduled_for IS NULL
+              OR (o.scheduled_for AT TIME ZONE 'Asia/Kolkata')::date <= (now() AT TIME ZONE 'Asia/Kolkata')::date + 7)))
+       ORDER BY COALESCE(o.scheduled_for, sr.created_at), o.seq`,
       [pid],
     );
+    const todayIst = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    const isToday = (v: any) => !v.scheduled_for || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(v.scheduled_for) <= todayIst;
+    // Only the next open visit of each request is actionable.
+    const next = visits.filter((v, i) => visits.findIndex((w) => w.request_id === v.request_id) === i);
     return {
       on_duty: Boolean(session?.on_duty),
       location_consent: Boolean(session?.location_consent_at),
       pending_requests: pending.map((p) => ({ ...p, distance_km: p.distance_m != null ? Math.round(p.distance_m / 100) / 10 : null, distance_m: undefined })),
-      ongoing_visit: visits.find((v) => ['provider_arrived', 'in_progress'].includes(v.status)) ?? visits.find((v) => v.status === 'confirmed') ?? null,
-      schedule: visits,
+      ongoing_visit:
+        next.find((v) => v.request_id === session?.active_job_id) ?? next.find((v) => ['provider_arrived', 'in_progress'].includes(v.status)) ?? null,
+      schedule: visits.filter(isToday),
+      upcoming: visits.filter((v) => !isToday(v)),
     };
   });
 
@@ -124,6 +135,8 @@ export default async function providerRoutes(fastify: FastifyInstance, ctx: Ctx)
       note: sr.note_enc ? ctx.cipher.decrypt(sr.note_enc) : null,
       attachments: await Promise.all(attachments.map(async (x) => ({ kind: x.kind, url: await ctx.adapters.storage.presignGet(x.blob_key) }))),
       video_session: video,
+      visits: await many(ctx.db, 'SELECT seq, scheduled_for, status FROM visit_occurrences WHERE request_id=$1 ORDER BY seq', [sr.id]),
+      estimated_items: (sr.line_items as any[]).filter((l) => l.estimate).map((l) => ({ option_code: l.option_code, name: l.name, quoted_paise: l.amount_paise })),
     };
   });
 
@@ -142,6 +155,26 @@ export default async function providerRoutes(fastify: FastifyInstance, ctx: Ctx)
   app.post('/provider/visits/:id/arrived', { schema: { tags: ['provider'], params: IdParams, body: z.object({ visit_code: z.string().regex(/^\d{4}$/) }) } }, async (req) =>
     markArrived(ctx, requireProviderId(req), req.params.id, req.body.visit_code),
   );
+  app.post(
+    '/provider/requests/:id/cancel',
+    { config: { idempotent: true }, schema: { tags: ['provider'], params: IdParams, body: z.object({ reason: z.string().min(3).max(300) }) } },
+    async (req) => cancelByProvider(ctx, requireProviderId(req), req.params.id, req.body.reason),
+  );
+
+  app.post('/provider/visits/:id/on-my-way', { schema: { tags: ['provider'], params: IdParams } }, async (req) => onMyWay(ctx, requireProviderId(req), req.params.id));
+
+  app.post(
+    '/provider/visits/:id/actuals',
+    {
+      schema: {
+        tags: ['provider'],
+        params: IdParams,
+        body: z.object({ items: z.array(z.object({ option_code: z.string(), actual_paise: z.number().int().min(0), note: z.string().max(200).optional() })).min(1).max(10) }),
+      },
+    },
+    async (req) => recordActuals(ctx, requireProviderId(req), req.params.id, req.body.items),
+  );
+
   app.post('/provider/visits/:id/start', { schema: { tags: ['provider'], params: IdParams } }, async (req) => startVisit(ctx, requireProviderId(req), req.params.id));
   app.post('/provider/visits/:id/complete', { config: { idempotent: true }, schema: { tags: ['provider'], params: IdParams } }, async (req) =>
     completeVisit(ctx, requireProviderId(req), req.params.id),
@@ -182,6 +215,7 @@ export default async function providerRoutes(fastify: FastifyInstance, ctx: Ctx)
       years_experience: p.years_experience,
       verification_status: p.verification_status,
       rating_avg: p.rating_avg,
+      ratings: await ratingSummary(ctx, pid),
       bio: { published: await approvedBio(ctx.db, pid), latest_submission: pendingBio },
       responsibilities: responsibilities?.content ?? null,
       partner_desk_phone: ctx.config.env.PARTNER_DESK_PHONE,
