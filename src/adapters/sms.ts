@@ -6,10 +6,21 @@ export interface SmsAdapter {
 
 /** Development / test adapter. Keeps the last OTP per phone in memory so tests can read it. Never used in production. */
 export class ConsoleSmsAdapter implements SmsAdapter {
-  readonly lastOtp = new Map<string, string>();
   readonly sent: Array<{ to: string; text: string; channel: string }> = [];
-  constructor(private readonly echo = false) {}
+  /** Number of upcoming OTP sends that should fail (simulates SMS outages). */
+  failNext = 0;
+  /**
+   * @param lastOtp shared dev inbox: the latest code per phone, whichever channel sent it.
+   */
+  constructor(
+    readonly lastOtp: Map<string, string> = new Map(),
+    private readonly echo = false,
+  ) {}
   async sendOtp(phone: string, code: string) {
+    if (this.failNext > 0) {
+      this.failNext--;
+      throw new Error('SMS unavailable');
+    }
     this.lastOtp.set(phone, code);
     // Local development only (production refuses SMS_PROVIDER=console).
     if (this.echo) console.info(`[dev-sms] OTP for ${phone.slice(0, 3)}******${phone.slice(-4)}: ${code}`);
@@ -22,7 +33,7 @@ export class ConsoleSmsAdapter implements SmsAdapter {
   }
 }
 
-/** MSG91 (India DLT-compliant SMS/OTP). WhatsApp and voice need provider-specific flows; wire them when chosen (open item). */
+/** MSG91 (India DLT-compliant SMS/OTP). WhatsApp OTPs go through the Meta adapter; voice needs a vendor (open item). */
 export class Msg91SmsAdapter implements SmsAdapter {
   constructor(
     private readonly authKey: string,

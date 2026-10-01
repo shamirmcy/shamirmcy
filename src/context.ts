@@ -5,9 +5,11 @@ import type { AppConfig } from './config.js';
 import { createPool } from './lib/db.js';
 import { FieldCipher } from './lib/crypto.js';
 import { ConsoleSmsAdapter, Msg91SmsAdapter, type SmsAdapter } from './adapters/sms.js';
+import { ConsoleWhatsAppAdapter, DisabledWhatsAppAdapter, MetaWhatsAppAdapter, type WhatsAppAdapter } from './adapters/whatsapp.js';
 import { ConsolePushAdapter, FcmPushAdapter, type PushAdapter } from './adapters/push.js';
 import { LocalStorageAdapter, S3StorageAdapter, type StorageAdapter } from './adapters/storage.js';
-import { GoogleDistanceAdapter, StraightLineDistanceAdapter, type DistanceAdapter } from './adapters/distance.js';
+import { GoogleRoutesAdapter, StraightLineDistanceAdapter, type DistanceAdapter } from './adapters/distance.js';
+import { GooglePlacesAdapter, OfflinePlacesAdapter, type PlacesAdapter } from './adapters/places.js';
 import { FakePaymentGateway, RazorpayGateway, type PaymentGateway } from './adapters/payments.js';
 import { BasicOcrAdapter, type OcrAdapter } from './adapters/ocr.js';
 import { StubVideoAdapter, type VideoAdapter } from './adapters/video.js';
@@ -17,9 +19,11 @@ import { jobHandlers } from './jobs/handlers.js';
 
 export interface Adapters {
   sms: SmsAdapter;
+  whatsapp: WhatsAppAdapter;
   push: PushAdapter;
   storage: StorageAdapter;
   distance: DistanceAdapter;
+  places: PlacesAdapter;
   /** Fallback when the primary distance API fails. */
   straightLine: DistanceAdapter;
   payments: PaymentGateway;
@@ -72,15 +76,25 @@ export function createLogger(level: string): Logger {
 
 export function buildAdapters(config: AppConfig): Adapters {
   const e = config.env;
+  // Dev/test only: the latest OTP per phone from either console channel (shown on the /dev page).
+  const devInbox = new Map<string, string>();
+  const echo = e.NODE_ENV === 'development';
   const straightLine = new StraightLineDistanceAdapter(config.assignment.straightLineFactor, config.assignment.avgSpeedKmh);
   return {
-    sms: e.SMS_PROVIDER === 'msg91' ? new Msg91SmsAdapter(req(e.MSG91_AUTH_KEY, 'MSG91_AUTH_KEY'), req(e.MSG91_OTP_TEMPLATE_ID, 'MSG91_OTP_TEMPLATE_ID')) : new ConsoleSmsAdapter(e.NODE_ENV === 'development'),
+    sms: e.SMS_PROVIDER === 'msg91' ? new Msg91SmsAdapter(req(e.MSG91_AUTH_KEY, 'MSG91_AUTH_KEY'), req(e.MSG91_OTP_TEMPLATE_ID, 'MSG91_OTP_TEMPLATE_ID')) : new ConsoleSmsAdapter(devInbox, echo),
+    whatsapp:
+      e.WHATSAPP_PROVIDER === 'meta'
+        ? new MetaWhatsAppAdapter(req(e.WHATSAPP_TOKEN, 'WHATSAPP_TOKEN'), req(e.WHATSAPP_PHONE_NUMBER_ID, 'WHATSAPP_PHONE_NUMBER_ID'), e.WHATSAPP_OTP_TEMPLATE, req(e.WHATSAPP_APP_SECRET, 'WHATSAPP_APP_SECRET'))
+        : e.WHATSAPP_PROVIDER === 'off'
+          ? new DisabledWhatsAppAdapter()
+          : new ConsoleWhatsAppAdapter(devInbox, echo, e.WHATSAPP_APP_SECRET ?? 'dev-only-whatsapp-secret'),
     push:
       e.PUSH_PROVIDER === 'fcm'
         ? new FcmPushAdapter(req(e.FCM_PROJECT_ID, 'FCM_PROJECT_ID'), async () => req(e.FCM_ACCESS_TOKEN, 'FCM_ACCESS_TOKEN'))
         : new ConsolePushAdapter(),
     storage: e.STORAGE_DRIVER === 's3' ? new S3StorageAdapter(req(e.S3_BUCKET, 'S3_BUCKET'), e.S3_REGION, e.S3_ENDPOINT) : new LocalStorageAdapter(e.STORAGE_LOCAL_DIR, e.PUBLIC_BASE_URL),
-    distance: e.DISTANCE_PROVIDER === 'google' ? new GoogleDistanceAdapter(req(e.GOOGLE_MAPS_API_KEY, 'GOOGLE_MAPS_API_KEY')) : straightLine,
+    distance: e.MAPS_PROVIDER === 'google' ? new GoogleRoutesAdapter(req(e.GOOGLE_MAPS_API_KEY, 'GOOGLE_MAPS_API_KEY'), e.MAPS_TRAVEL_MODE) : straightLine,
+    places: e.MAPS_PROVIDER === 'google' ? new GooglePlacesAdapter(req(e.GOOGLE_MAPS_API_KEY, 'GOOGLE_MAPS_API_KEY')) : new OfflinePlacesAdapter(),
     straightLine,
     payments:
       e.PAYMENT_GATEWAY === 'razorpay'

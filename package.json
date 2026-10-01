@@ -4,7 +4,7 @@
   "description": "KM DocH (Doctor At Your Home) backend API",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/db/migrations','dist/db/migrations',{recursive:true})\"",
+    "build": "tsc -p tsconfig.build.json && node -e \"const fs=require('fs');fs.cpSync('src/db/migrations','dist/db/migrations',{recursive:true});fs.cpSync('src/dev/static','dist/dev/static',{recursive:true})\"",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
     "worker:dev": "tsx src/worker.ts",
@@ -28,6 +28,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1144.0",
     "@fastify/helmet": "^13.1.1",
     "@fastify/swagger": "^9.9.1",
+    "@fastify/swagger-ui": "^6.1.1",
     "@fastify/websocket": "^11.3.1",
     "bullmq": "^6.3.11",
     "fastify": "^5.12.5",

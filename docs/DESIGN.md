@@ -90,6 +90,10 @@ Partner-desk phone (`PARTNER_DESK_PHONE`), ambulance per-km rates (seeded placeh
 - **Refund retries**: failed gateway refunds retry every 5, 10, 20, 40, 80 minutes (`refunds.retry` job). After 6 attempts they stop and alert ops. Refunds still being retried count against the payment, so the same money can't be refunded twice.
 - **Rate limits**: 300 requests/minute per signed-in user, 60/minute per IP for public endpoints (`429` with `Retry-After`). Webhooks and health checks are exempt.
 
+- **WhatsApp OTP** (Meta Cloud API, authentication template), SMS fallback when WhatsApp fails at once or reports a delivery failure by webhook (same code, sent once), and a patient choice of SMS. The code is kept encrypted only until it is used or expires.
+- **Maps**: arrival times use Google **Routes API** (traffic-aware, `DRIVE` or `TWO_WHEELER`). Address search uses **Places API (New)** autocomplete/details and **Geocoding** reverse lookup, restricted to India, through the server with a serviceability check. Offline sample data is used when no key is configured.
+- **Test console** at `/dev` and **API docs** at `/docs` (development only; never registered in production).
+
 ## 6. Not built yet
 
-Number masking, WhatsApp/voice delivery, real OCR/video vendors, bank payout rail, an admin UI (ops is API-only), tax lines on receipts.
+Number masking, WhatsApp for non-OTP notifications (needs approved templates per message), voice calls, real OCR/video vendors, bank payout rail, an admin UI (ops is API-only), tax lines on receipts.

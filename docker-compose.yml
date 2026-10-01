@@ -1,5 +1,5 @@
-# Local development stack. `docker compose up -d db redis` then `npm run dev` + `npm run worker:dev`,
-# or bring everything up including the API and worker containers.
+# Local stack. Easiest: double-click start-windows.bat / start-mac.command, then open http://localhost:3000/dev
+# Developers: `docker compose up -d db redis` then `npm run dev` + `npm run worker:dev`.
 services:
   db:
     image: postgis/postgis:16-3.4
@@ -29,11 +29,15 @@ services:
     build: .
     environment: *env
     ports: ['3000:3000']
-    depends_on: [migrate, redis]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
   worker:
     build: .
     command: ['node', 'dist/worker.js']
     environment: *env
-    depends_on: [migrate, redis]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
 volumes:
   pgdata:
